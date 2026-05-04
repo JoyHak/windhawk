@@ -2,10 +2,10 @@
 // @id              fix-white-flash
 // @name            Fix white flashes for all windows
 // @description     Fixes white flashes when opening new window.
-// @version         0.1
+// @version         0.2
 // @author          Rafaello
 // @github          https://github.com/JoyHak
-// @include         *
+// @include         notepad++.exe
 // @compilerOptions -lGdi32
 // ==/WindhawkMod==
 
