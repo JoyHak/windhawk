@@ -6,7 +6,6 @@
 // @author          Rafaello
 // @github          https://github.com/JoyHak
 // @include         notepad++.exe
-// @include         xyplorer.exe
 // @compilerOptions -lGdi32 -lComctl32
 // ==/WindhawkMod==
 
@@ -33,8 +32,9 @@ decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
 decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
-static const UINT_PTR SUBCLASS_ID = 0xFEEDBEEF;
-static const HBRUSH BRUSH = CreateSolidBrush(0x00191919); // COLORREF: 0x00BBGGRR
+static const UINT_PTR     SUBCLASS_ID             = 0xFEEDBEEF;
+static const HBRUSH       BRUSH                   = CreateSolidBrush(0x00191919); // 0x00BBGGRR
+
 static std::unordered_map<HWND, bool> g_filledWindows;    // prevent any double fill/remove actions
 
 
@@ -99,14 +99,14 @@ LRESULT CALLBACK FillWindow(
         if (hdc) {
             FillRect(hdc, &rect, BRUSH);
             ReleaseDC(hWnd, hdc);
-            Wh_Log(L"Fill with hdc %d (msg: 0x%04x)", hWnd, uMsg);
+            Wh_Log(L"Fill by hdc %d (msg: 0x%04x)", hWnd, uMsg);
         } else if (wParam) {
             FillRect((HDC)wParam, &rect, BRUSH);
-            Wh_Log(L"Fill with wParam %d (msg: 0x%04x)", hWnd, uMsg);
+            Wh_Log(L"Fill by wParam %d (msg: 0x%04x)", hWnd, uMsg);
         } else {
             InvalidateRect(hWnd, NULL, NULL);
-            Wh_Log(L"Invalidate %d (msg: 0x%04x)", hWnd, uMsg);
             // InvalidateRect(hWnd, &rect, TRUE);
+            Wh_Log(L"Invalidate rect %d (msg: 0x%04x)", hWnd, uMsg);
             // break;
         }
 
@@ -136,28 +136,20 @@ LRESULT CALLBACK FillWindow(
 
 // Helpers
 static void SetWindowFiller(HWND hWnd) {
-    // Only top-level non-layered windows
-    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
-
-    if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
-        return;
-
     // Avoid double-install
-    if (g_subclassedWindows.find(hWnd) != g_subclassedWindows.end())
+    if (g_filledWindows.find(hWnd) != g_filledWindows.end())
         return;
 
-    // Install subclass with state in dwRefData
-    BOOL ok = SetWindowSubclass(
-        hWnd, FillWindow, WH_SUBCLASS_ID,
-        reinterpret_cast<DWORD_PTR>(0)
-    );
+    // Only top-level unrendered windows
+    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    // LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
 
-    if (ok) {
-        g_subclassedWindows[hWnd] = state;
-        // Wh_Log(L"Install %p %x", hWnd, WH_SUBCLASS_ID);
-    } else {
-        delete state;
+    if ((style & WS_CHILD) || (style & WS_VISIBLE) /*|| (exStyle & WS_EX_LAYERED)*/)
+        return;
+
+    if (SetWindowSubclass(hWnd, FillWindow, SUBCLASS_ID, 0)) {
+        g_filledWindows[hWnd] = false;
+        Wh_Log(L"Set for %d (%d total)", hWnd, g_filledWindows.size());
     }
 }
 
@@ -171,7 +163,7 @@ static void RemoveWindowFiller(HWND hWnd, UINT_PTR uIdSubclass) {
     }
 
     RemoveWindowSubclass(hWnd, FillWindow, uIdSubclass);
-    // Wh_Log(L"Remove %d %x", hWnd, uIdSubclass);
+    // Wh_Log(L"Remove for %d", hWnd);
 }
 
 // Hook default windows
@@ -184,10 +176,9 @@ LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lP
 
 // Hook dialog boxes
 LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
-    // if (Msg == WM_INITDIALOG)
-    if (Msg == WM_NCCREATE || Msg == WM_CREATE)
+    // if (Msg == WM_NCCREATE || Msg == WM_CREATE)
+    if (Msg == WM_INITDIALOG)
         SetWindowFiller(hWnd);
-
     return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);  
 }
 
@@ -196,8 +187,8 @@ LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lPara
 BOOL Wh_ModInit() {
     using WindhawkUtils::SetFunctionHook;
 
-    if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
-        Wh_Log(L"Failed to hook DefWindowProcW!");
+    // if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
+    //     Wh_Log(L"Failed to hook DefWindowProcW!");
     if (!SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
         Wh_Log(L"Failed to hook DefDlgProcW!");
 
@@ -212,7 +203,7 @@ void Wh_ModUninit() {
         auto it = g_filledWindows.begin();
         HWND hWnd = it->first;
         
-        // Wh_Log(L"Erase %d", hWnd);
+        // Wh_Log(L"Uninit %d", hWnd);
         RemoveWindowSubclass(hWnd, FillWindow, SUBCLASS_ID);
         g_filledWindows.erase(it);
     }
