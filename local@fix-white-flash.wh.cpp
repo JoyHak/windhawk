@@ -6,7 +6,7 @@
 // @author          Rafaello
 // @github          https://github.com/JoyHak
 // @include         *
-// @compilerOptions -lGdi32
+// @compilerOptions -lGdi32 -lComctl32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -31,77 +31,59 @@ decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
 static HBRUSH g_windowBrush = CreateSolidBrush(0x00191919); // COLORREF: 0x00BBGGRR
 
-static bool FillWindow(
+static LRESULT FillWindow(
     HWND hWnd,
     UINT Msg,
     WPARAM wParam,
     LPARAM lParam,
-    DefProcCallback restore)
-{
+    DefProcCallback restore
+) {
     // Fills the window with a rectangle, 
     // preventing it from being filled with a white background.
-    
-    if (Msg != WM_NCCALCSIZE)
-        return false;
-    
-    // Skip children and already-visible windows
-    LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    // if (style & WS_CHILD)
-    if ((style & WS_CHILD) || (style & WS_VISIBLE))
-        return false;
 
-    // // Skip 1px areas
-    RECT rect;
-    if (!GetClientRect(hWnd, &rect)) 
-        return false;
+    if (Msg != WM_NCCREATE || Msg != WM_CREATE)
+        return -1;
 
-    int width = rect.right - rect.left;
-    int height = rect.bottom - rect.top;
-    if (width <= 1 || height <= 1)
-        return false;
-
-    if (wParam) {
-        // Calc mode (dialogs)
-        NCCALCSIZE_PARAMS* params = (NCCALCSIZE_PARAMS*)lParam;
-        if (!params) return false;
-        
-        //  Call original FIRST to calc valid rects
-        RECT origClient;
-        CopyRect(&origClient, &params->rgrc[0]);
-        DefWindowProcW_Original(hWnd, Msg, FALSE, (LPARAM)&origClient);  // Calc
-        
-        // Fill using orig rect (safe HDC now valid)
-        HDC hdc = (HDC)wParam;  // May be valid post-orig
-        FillRect(hdc, &origClient, g_windowBrush);
-        
-        // Copy calc'd client back (preserves NC/titlebar)
-        CopyRect(&params->rgrc[0], &origClient);
-        // WVR_VALIDRECTS implicit
-    } else {  
-        // Simple RECT (windows)
-        RECT* rect = (RECT*)lParam;
-        FillRect((HDC)wParam, rect, g_windowBrush);
+    LRESULT res = restore(hWnd, Msg, wParam, lParam);
+    HDC hdc = GetWindowDC(hWnd); // covers titlebar/frame + client
+    if (hdc) {
+        RECT wr;
+        if (GetWindowRect(hWnd, &wr)) {
+            int w = wr.right - wr.left;
+            int h = wr.bottom - wr.top;
+            RECT fill = {0,0,w,h}; // window-coordinates for GetWindowDC
+            FillRect(hdc, &fill, g_windowBrush);
+        }
+        ReleaseDC(hWnd, hdc);
     }
 
-    return TRUE;
+    // Call original synchronously (never save/forward pointers)
+    // Ensure frame re-paint
+    RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+
+    return res;
 }
 
 // Hook default windows
-LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
-{
-    if (FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original))
-        return TRUE;
+LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
+    LRESULT res = FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original);
+    if (res != -1)
+        return res;
 
     return DefWindowProcW_Original(hWnd, Msg, wParam, lParam);
 }
 
 // Hook dialog boxes
-LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
-{
-    if (FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original))
-        return TRUE;
-
-    return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
+LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
+    // if (FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original))
+    //     return TRUE;
+    // return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
+    
+    LRESULT res = FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original);
+    if (res != -1)
+        return res;
+    
+    return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);  
 }
 
 
@@ -109,8 +91,8 @@ BOOL Wh_ModInit()
 {
     using WindhawkUtils::SetFunctionHook;
 
-    if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
-        Wh_Log(L"Failed to hook DefWindowProcW!");
+    // if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
+        // Wh_Log(L"Failed to hook DefWindowProcW!");
     if (!SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
         Wh_Log(L"Failed to hook DefDlgProcW!");
 
