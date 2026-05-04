@@ -1,6 +1,6 @@
 // ==WindhawkMod==
-// @id              fix-white-flash
-// @name            Fix white flashes for all windows
+// @id              fix-white-flash-test
+// @name            Fix white flashes for all windows (test)
 // @description     Fixes white flashes when opening new window.
 // @version         0.2
 // @author          Rafaello
@@ -33,20 +33,33 @@ decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
 using DefProcCallback = LRESULT (WINAPI *)(HWND, UINT, WPARAM, LPARAM);
 
-static std::unordered_map<HWND, bool> g_filledWindows;      // prevents painting after full rendering
-static const HBRUSH BRUSH = CreateSolidBrush(0x00191919);   // represents color 0x00BBGGRR
+static const LRESULT FILL_ERROR = -1;
+static std::unordered_map<HWND, bool> g_filledWindows;
+static const HBRUSH BRUSH = CreateSolidBrush(0x00191919);
 
-
-// Helpers
 static bool ShouldSkip(HWND hWnd) {
-    if (g_filledWindows.contains(hWnd))
-        return true;
+    // if (g_filledWindows.contains(hWnd) && g_filledWindows.at(hWnd))
+    //     return true;
+
+    if (g_filledWindows.contains(hWnd)) {
+        if (g_filledWindows.at(hWnd)) {
+            Wh_Log(L"true");
+            return true;
+        }
+
+        if (!g_filledWindows.at(hWnd))
+            Wh_Log(L"false");
+    }
 
     // Only top-level unrendered windows
     LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
     LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
 
-    return ((style & WS_CHILD) /* || (style & WS_VISIBLE) */ || (exStyle & WS_EX_LAYERED));
+    if ((style & WS_CHILD) /* || (style & WS_VISIBLE) */ || (exStyle & WS_EX_LAYERED))
+        return true;
+
+    return false;
+
 }
 
 static LRESULT FillWindow(
@@ -56,24 +69,22 @@ static LRESULT FillWindow(
     LPARAM lParam,
     DefProcCallback restore)
 {
-    // Covers the white background with a colored rectangle while the window is rendering.
-
     switch (Msg) {
     case WM_NCPAINT: {
         // This message usually appears first.
         // We're painting the non-client area first and 
-        // then restore() draws chrome elements 
+        // then DefSubclassProc draws chrome elements 
         // (caption buttons, borders) on top of it.
         if (ShouldSkip(hWnd))
-            break;
+            return FILL_ERROR;
             
         HDC hdc = GetWindowDC(hWnd);  // includes NC
         if (!hdc) 
-             break;
+             return FILL_ERROR;
 
         RECT rect;
         if (!GetWindowRect(hWnd, &rect))
-             break;
+            return FILL_ERROR;
 
         rect = { 
             0, 0,  // left upper corner
@@ -89,7 +100,9 @@ static LRESULT FillWindow(
         // filled the window. 
         // The message below handles this.
 
-        break;
+        if (g_filledWindows.contains(hWnd))
+            Wh_Log(L"filled: %d", g_filledWindows.at(hWnd));
+        return restore(hWnd, Msg, wParam, lParam);
     }
     case WM_ERASEBKGND: {
         // Apply the rectangle fill and cover the
@@ -97,11 +110,11 @@ static LRESULT FillWindow(
         // It will be removed later so that the 
         // window elements become visible.
         if (ShouldSkip(hWnd))
-            break;
+            return FILL_ERROR;
 
         RECT rect;
         if (!GetClientRect(hWnd, &rect))
-            break;
+            return FILL_ERROR;
 
         // int width = rect.right - rect.left;
         // int height = rect.bottom - rect.top;
@@ -125,10 +138,13 @@ static LRESULT FillWindow(
         }
 
         g_filledWindows[hWnd] = true;
-        break;
+
+        if (g_filledWindows.contains(hWnd))
+            Wh_Log(L"filled: %d", g_filledWindows.at(hWnd));
+        return restore(hWnd, Msg, wParam, lParam);
     }
-    
-    case WM_NCDESTROY: {
+    /* 
+    case WM_ACTIVATE: {
         // Window is rendered, ensure cleanup
         // RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
         // UpdateWindow(hWnd);
@@ -136,49 +152,52 @@ static LRESULT FillWindow(
         if (it != g_filledWindows.end()) {
             g_filledWindows.erase(it);
         }
-        break;
-    }
+        return FILL_ERROR;
+    } 
+    */
     } // switch
 
-    return restore(hWnd, Msg, wParam, lParam);
+    return FILL_ERROR;
 }
 
 
-// Hook rendering procedures
-LRESULT WINAPI DefWindowProcA_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
-    return FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcA_Original);
+// Hook default windows
+LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
+{
+    if (Msg == WM_NCCALCSIZE
+     && FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original)) {
+        return TRUE;
+    }
+
+    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam);
 }
 
-LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
-    return FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original);
+// Hook dialog boxes
+LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
+{
+    LRESULT result = FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original);
+    if (result != FILL_ERROR) {
+        return result;
+    }
+
+    return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
 }
 
-LRESULT WINAPI DefDlgProcA_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam){
-    return FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcA_Original);
-}
 
-LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam){
-    return FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original);
-}
-
-
-// Init mod
-BOOL Wh_ModInit() {
+BOOL Wh_ModInit()
+{
     using WindhawkUtils::SetFunctionHook;
 
-    if (!SetFunctionHook(DefWindowProcA, DefWindowProcA_Hook, &DefWindowProcA_Original))
-        Wh_Log(L"Failed to hook DefWindowProcA!");
-    if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
-        Wh_Log(L"Failed to hook DefWindowProcW!");
-    if (!SetFunctionHook(DefDlgProcA, DefDlgProcA_Hook, &DefDlgProcA_Original))
-        Wh_Log(L"Failed to hook DefDlgProcA!");
+    // if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
+    //     Wh_Log(L"Failed to hook DefWindowProcW!");
     if (!SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
         Wh_Log(L"Failed to hook DefDlgProcW!");
 
     return true;
 }
 
-void Wh_ModUninit() {
+void Wh_ModUninit()
+{
     if (BRUSH) {
         DeleteObject(BRUSH);
     }
