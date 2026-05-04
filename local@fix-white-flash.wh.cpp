@@ -152,6 +152,14 @@ BOOL Wh_ModInit()
 
 void Wh_ModUninit()
 {
-    if (g_windowBrush)
+    if (g_windowBrush) {
         DeleteObject(g_windowBrush);
+        g_windowBrush = nullptr;
+    }
+
+    for (auto &p : g_filledWindows) {
+        KillTimer(p.second.hWnd, p.first);
+    }
+
+    g_filledWindows.clear();
 }
