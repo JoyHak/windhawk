@@ -1,6 +1,7 @@
 <div align="center">   
-
-<img src="icon.png">
+  
+<a href="https://windhawk.net/">
+<img src="icon.png" alt="Windhawk"></a>
 <br><br>
 <a href="https://github.com/ramensoftware/windhawk-mods/discussions">
 <img src="https://img.shields.io/github/discussions-search?query=repo%3Aramensoftware%2Fwindhawk-mods&style=flat&logo=TheConversation&logoColor=white&label=Discussions&color=white" 
