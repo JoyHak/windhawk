@@ -23,112 +23,177 @@ Fixes white flashes when opening new windows.
 */
 // ==/WindhawkModReadme==
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <commctrl.h> // SetWindowSubclass / DefSubclassProc
-// #include <dwmapi.h>
+#include <windhawk_utils.h>
+#include <commctrl.h>  // SetWindowSubclass, DefSubclassProc
+
+decltype(&DefWindowProcA) DefWindowProcA_Original = nullptr;
+decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
+decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
+decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
 static const UINT_PTR WH_SUBCLASS_ID = 0xFEEDBEEF;
+static HBRUSH g_windowBrush = CreateSolidBrush(0x00191919); // COLORREF: 0x00BBGGRR
 
-/*
+// Per-window state stored in subclass refData
+struct SubclassState {
+    bool prefilled;    // we already did the prefill
+    bool removed;      // subclass removed (to avoid double-free)
+};
+
+/* 
 // Helper: detect layered / DWM-composited windows we should skip
-static bool IsWindowSkippable(HWND hWnd) {
+static bool IsWindowSkippable(HWND hWnd)
+{
     LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
-
-    // DWM check (requires -ldwmapi.lib)
-    // BOOL isComposition = FALSE;
-    // DwmIsCompositionEnabled(&isComposition);
-    // if (isComposition)
+    // LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
 
     return ((style & WS_CHILD)); 
-         || (style & WS_VISIBLE)
-         || (exStyle & WS_EX_LAYERED))
-         
+    //    || (style & WS_VISIBLE)
+    //    || (exStyle & WS_EX_LAYERED))
 }
-*/
+ */
 
 LRESULT CALLBACK FillWindow(
     HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
-    UINT_PTR uIdSubclass, DWORD_PTR /*dwRefData*/
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData
 ) {
-    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);    
+    SubclassState* state = reinterpret_cast<SubclassState*>(dwRefData);
+    if (!state) {
+        // should not happen, but fall back to default
+        Wh_Log(L"Fallback %d (msg: 0x%04x)", hWnd, uMsg);
+        return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+    }
 
     switch (uMsg) {
     case WM_ERASEBKGND: {
-        if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
+        // Only prefill if we haven't yet
+        if (state->prefilled)
             break;
 
-        // wParam is HDC for WM_ERASEBKGND (may be NULL)
-        HDC hdc = (HDC)wParam;
-        BOOL needRelease = FALSE;
+        RECT rect;
+        if (!GetClientRect(hWnd, &rect))
+            break;
 
-        if (!hdc) { 
-            hdc = GetDC(hWnd); 
-            needRelease = TRUE; 
+        // int width = rect.right - rect.left;
+        // int height = rect.bottom - rect.top;
+        // if (width <= 1 || height <= 1)
+        //     break;
+
+        // HDC hdc = GetWindowDC(hWnd);
+        HDC hdc = GetDC(hWnd);
+        if (hdc) {
+            FillRect(hdc, &rect, g_windowBrush);
+            ReleaseDC(hWnd, hdc);
+            Wh_Log(L"Fill with hdc %d (msg: 0x%04x)", hWnd, uMsg);
+        } else if (wParam) {
+            FillRect((HDC)wParam, &rect, g_windowBrush);
+            Wh_Log(L"Fill with wParam %d (msg: 0x%04x)", hWnd, uMsg);
+        } else {
+            InvalidateRect(hWnd, NULL, NULL);
+            Wh_Log(L"Invalidate %d (msg: 0x%04x)", hWnd, uMsg);
+            // InvalidateRect(hWnd, &rect, TRUE);
+            // break;
         }
 
-        RECT rc;
-        if (GetClientRect(hWnd, &rc))
-            FillRect(hdc, &rc, g_windowBrush);
-
-        if (needRelease) 
-            ReleaseDC(hWnd, hdc);
-
-        Wh_Log(L"WM_ERASEBKGND %d (msg: 0x%04x)", hWnd, uMsg);
-        // Indicate we handled erase background
+        state->prefilled = true;
+        // indicate we've handled erase
         return 1;
     }
 
     case WM_NCPAINT: {
-        if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
+        // paint non-client once if not done yet
+        if (state->prefilled)
+            break;
+            
+        HDC hdc = GetWindowDC(hWnd);  // includes NC
+        if (!hdc) 
+             break;
+
+        RECT rect;
+        if (!GetClientRect(hWnd, &rect))
             break;
 
-        // Non-client paint: get full window DC and paint the whole window rect.
-        HDC hdc = GetWindowDC(hWnd); // includes non-client
-        if (hdc) {
-            RECT wr;
-            if (GetWindowRect(hWnd, &wr)) {
-                int w = wr.right - wr.left;
-                int h = wr.bottom - wr.top;
-                RECT fill = { 0, 0, w, h };
-                FillRect(hdc, &fill, g_windowBrush);
-                Wh_Log(L"WM_NCPAINT %d (msg: 0x%04x)", hWnd, uMsg);
-            }
-            ReleaseDC(hWnd, hdc);
+        RECT fill = { 
+            0, 0,  // left upper corner
+            rect.right  - rect.left, 
+            rect.bottom - rect.top          
+        };
+
+        FillRect(hdc, &fill, g_windowBrush);
+        ReleaseDC(hWnd, hdc);
+        Wh_Log(L"Paint %d (msg: 0x%04x)", hWnd, uMsg);
+        // do not set prefilled here necessarily; 
+        // we wait for WM_ERASEBKGND/WM_PAINT too.
+
+        // allow default NC painting to draw chrome on top
+        break;
+    }
+
+    case WM_PAINT: {
+        // When first WM_PAINT happens, allow it to run and then uninstall the subclass.
+        // We call DefSubclassProc to let the app paint; then remove subclass and free state.
+        LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
+
+        if (!state->removed) {
+            // remove subclass now we no longer need to intercept erases
+            RemoveWindowSubclass(hWnd, FillWindow, uIdSubclass);
+            state->removed = true;
+            delete state; // free allocated state
+            Wh_Log(L"Remove %d %x (msg: 0x%04x)", hWnd, uIdSubclass, uMsg);
         }
-
-        // Returning 0 might be fine — we've painted non-client. Some classes expect defproc.
-        // Let the default non-client paint still run to draw frame elements on top.
-        // So fall through to DefSubclassProc below instead of returning immediately.
-        break;
+        return result;
     }
 
-    case WM_NCDESTROY:
-        // Clean up subclass entry
-        RemoveWindowSubclass(hWnd, Wh_SubclassProc, uIdSubclass);
-        Wh_Log(L"Remove %d (msg: 0x%04x)", hWnd, uMsg);
+    case WM_NCDESTROY: {
+        // Clean up if not already removed
+        if (!state->removed) {
+            RemoveWindowSubclass(hWnd, FillWindow, uIdSubclass);
+            state->removed = true;
+            delete state;
+            Wh_Log(L"Destroy %d %x (msg: 0x%04x)", hWnd, uIdSubclass, uMsg);
+        }
         break;
     }
+    } // switch
 
-    // Default behavior for everything else
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
-LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
-    if (Msg == WM_NCCREATE || Msg == WM_CREATE)
-        SetWindowSubclass(hWnd, FillWindow, WH_SUBCLASS_ID, 0);
+static void SetWindowFiller(HWND hWnd) {
+    // Basic filters: only top-level non-layered windows
+    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
 
-    // Forward message normally
-    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam)
+    if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
+        return;
+
+    // Allocate per-window state
+    SubclassState* state = new SubclassState();
+    state->prefilled = false;
+    state->removed   = false;
+
+    // Install subclass with state in dwRefData
+    SetWindowSubclass(
+        hWnd, FillWindow, WH_SUBCLASS_ID, 
+        reinterpret_cast<DWORD_PTR>(state)
+    );
+    Wh_Log(L"Install %d %x", hWnd, WH_SUBCLASS_ID);
 }
 
+// Hook default windows
 LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
-    if (Msg == WM_INITDIALOG)
-        SetWindowSubclass(hWnd, FillWindow, WH_SUBCLASS_ID, 0);
+    if (Msg == WM_NCCREATE || Msg == WM_CREATE)
+        SetWindowFiller(hWnd);
 
-    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam)
+    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam);   
+}
+
+// Hook dialog boxes
+LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
+    if (Msg == WM_INITDIALOG)
+        SetWindowFiller(hWnd);
+
+    return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);  
 }
 
 
@@ -148,4 +213,7 @@ void Wh_ModUninit() {
         DeleteObject(g_windowBrush);
         g_windowBrush = nullptr;
     }
+    
+    // May cause memory leak here because we're not calling `delete` on
+    // remained heap allocated SubclassState structs
 }
