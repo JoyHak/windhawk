@@ -33,9 +33,9 @@ decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
 decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
-static const UINT_PTR WH_SUBCLASS_ID = 0xFEEDBEEF;
-static const HBRUSH BRUSH = CreateSolidBrush(0x00191919);     // COLORREF: 0x00BBGGRR
-static std::unordered_map<HWND, bool> g_subclassedWindows;
+static const UINT_PTR SUBCLASS_ID = 0xFEEDBEEF;
+static const HBRUSH BRUSH = CreateSolidBrush(0x00191919); // COLORREF: 0x00BBGGRR
+static std::unordered_map<HWND, bool> g_filledWindows;    // prevent any double fill/remove actions
 
 
 static void RemoveWindowFiller(HWND hWnd, UINT_PTR uIdSubclass);
@@ -46,8 +46,11 @@ LRESULT CALLBACK FillWindow(
 ) {
     switch (uMsg) {
     case WM_NCPAINT: {
-        // paint non-client once if not done yet
-        if (g_subclassedWindows[hWnd])
+        // This message usually appears first.
+        // We're painting the non-client area first and 
+        // then DefSubclassProc draws chrome elements 
+        // (caption buttons, borders) on top of it.
+        if (g_filledWindows[hWnd])
             break;
             
         HDC hdc = GetWindowDC(hWnd);  // includes NC
@@ -64,18 +67,22 @@ LRESULT CALLBACK FillWindow(
             rect.bottom - rect.top          
         };
 
-        FillRect(hdc, &rect, g_windowBrush);
+        FillRect(hdc, &rect, BRUSH);
         ReleaseDC(hWnd, hdc);
         Wh_Log(L"Paint %d (msg: 0x%04x)", hWnd, uMsg);
-        // do not set prefilled here necessarily; 
-        // we wait for WM_ERASEBKGND/WM_PAINT too.
- 
-        // allow default NC painting to draw chrome on top
+
+        // The g_filledWindows flag is not set here because 
+        // we've created the background but have not yet 
+        // filled the window. 
+        // The message below handles this.
         break;
     }
     case WM_ERASEBKGND: {
-        // Only prefill if we haven't yet
-        if (g_subclassedWindows[hWnd])
+        // Apply the rectangle fill and cover the
+        // white background during window rendering.
+        // It will be removed later so that the 
+        // window elements become visible.
+        if (g_filledWindows[hWnd])
             break;
 
         RECT rect;
@@ -90,11 +97,11 @@ LRESULT CALLBACK FillWindow(
         // HDC hdc = GetWindowDC(hWnd);
         HDC hdc = GetDC(hWnd);
         if (hdc) {
-            FillRect(hdc, &rect, g_windowBrush);
+            FillRect(hdc, &rect, BRUSH);
             ReleaseDC(hWnd, hdc);
             Wh_Log(L"Fill with hdc %d (msg: 0x%04x)", hWnd, uMsg);
         } else if (wParam) {
-            FillRect((HDC)wParam, &rect, g_windowBrush);
+            FillRect((HDC)wParam, &rect, BRUSH);
             Wh_Log(L"Fill with wParam %d (msg: 0x%04x)", hWnd, uMsg);
         } else {
             InvalidateRect(hWnd, NULL, NULL);
@@ -104,7 +111,7 @@ LRESULT CALLBACK FillWindow(
         }
 
         // Indicate that we've handled erase
-        g_subclassedWindows[hWnd] = true;
+        g_filledWindows[hWnd] = true;
         return 1;
     }
 
@@ -147,18 +154,20 @@ static void SetWindowFiller(HWND hWnd) {
     );
 
     if (ok) {
-        g_subclassedWindows[hWnd] = false;
+        g_subclassedWindows[hWnd] = state;
         // Wh_Log(L"Install %p %x", hWnd, WH_SUBCLASS_ID);
+    } else {
+        delete state;
     }
 }
 
 static void RemoveWindowFiller(HWND hWnd, UINT_PTR uIdSubclass) {
     // Prevent double-cleaning in the future
-    auto it = g_subclassedWindows.find(hWnd);
-    if (it == g_subclassedWindows.end()) {
+    auto it = g_filledWindows.find(hWnd);
+    if (it == g_filledWindows.end()) {
         return;
     } else {
-        g_subclassedWindows.erase(it);
+        g_filledWindows.erase(it);
     }
 
     RemoveWindowSubclass(hWnd, FillWindow, uIdSubclass);
@@ -196,13 +205,15 @@ BOOL Wh_ModInit() {
 }
 
 void Wh_ModUninit() {
-    if (g_windowBrush) {
-        DeleteObject(g_windowBrush);
-        g_windowBrush = nullptr;
-    }
+    if (BRUSH)
+        DeleteObject(BRUSH);
 
-    for (auto &win : g_subclassedWindows) {
-        RemoveWindowSubclass(win.first, FillWindow, WH_SUBCLASS_ID);
+    while (!g_filledWindows.empty()) {
+        auto it = g_filledWindows.begin();
+        HWND hWnd = it->first;
+        
+        // Wh_Log(L"Erase %d", hWnd);
+        RemoveWindowSubclass(hWnd, FillWindow, SUBCLASS_ID);
+        g_filledWindows.erase(it);
     }
-    g_subclassedWindows.clear();
 }
