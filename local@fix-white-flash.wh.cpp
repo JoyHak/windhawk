@@ -45,6 +45,8 @@ struct CallbackArgs {
 static std::unordered_map<UINT_PTR, CallbackArgs> g_filledWindows;
 static UINT_PTR g_timerCounter = 1;
 static HBRUSH g_windowBrush = CreateSolidBrush(0x00191919); // COLORREF: 0x00BBGGRR
+static const UINT WM_WH_RESTORE = WM_APP + 0x101;
+
 
 VOID CALLBACK RestoreWindow(HWND /*hWnd*/, UINT /*uMsg*/, UINT_PTR idEvent, DWORD /*dwTime*/)
 {
@@ -58,10 +60,9 @@ VOID CALLBACK RestoreWindow(HWND /*hWnd*/, UINT /*uMsg*/, UINT_PTR idEvent, DWOR
 
     // Force non-client repaint so titlebar/frame appear immediately.
     // RDW_FRAME invalidates the frame; RDW_UPDATENOW causes immediate paint.
-    // RedrawWindow(args.hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
-    // UpdateWindow(args.hWnd);
+    RedrawWindow(args.hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
 
-    if (KillTimer(args.hWnd, idEvent))
+    // if (KillTimer(args.hWnd, idEvent))
         g_filledWindows.erase(it);
 }
 
@@ -77,35 +78,35 @@ static bool FillWindow(
 
     // Skip children and already-visible windows
     LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    // if (style & WS_CHILD)
     if ((style & WS_CHILD) || (style & WS_VISIBLE))
         return false;
 
     // Skip 1px areas
     RECT rect;
-    if (!GetClientRect(hWnd, &rect)) 
+    if (!GetClientRect(hWnd, &rect))
         return false;
 
-    int width  = rect.right - rect.left;
+    int width = rect.right - rect.left;
     int height = rect.bottom - rect.top;
     if (width <= 1 || height <= 1)
         return false;
 
-    HDC hdc = GetWindowDC(hWnd);
+    // FillRect((HDC)wParam, &rect, g_windowBrush);
+    // InvalidateRect(hWnd, NULL, NULL);
+
+    HDC hdc = GetDC(hWnd);
     if (hdc) {
         FillRect(hdc, &rect, g_windowBrush);
         ReleaseDC(hWnd, hdc);
-    } else if (wParam) {
-        FillRect((HDC)wParam, &rect, g_windowBrush);
     } else {
-        // InvalidateRect(hWnd, NULL, NULL);
-        return false;
+        FillRect((HDC)wParam, &rect, g_windowBrush);
     }
 
     // Schedule restore
     UINT_PTR timerId = ++g_timerCounter;
     g_filledWindows[timerId] = { hWnd, Msg, wParam, lParam, restore };
-    SetTimer(hWnd, timerId, USER_TIMER_MINIMUM, RestoreWindow);
+    // SetTimer(hWnd, timerId, USER_TIMER_MINIMUM, RestoreWindow);
+    PostMessageW(hWnd, WM_WH_RESTORE, timerId, 0);
 
     return true;
 }
@@ -113,6 +114,13 @@ static bool FillWindow(
 // Hook default windows
 LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
+    if (Msg == WM_WH_RESTORE) {
+        UINT_PTR timerId = (UINT_PTR)wParam;
+        RestoreWindow(hWnd, Msg, timerId, lParam);
+        // We handled the restore; no further processing needed.
+        return FALSE;
+    }
+
     if (Msg == WM_NCCALCSIZE
      && FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original)) {
         return TRUE;
@@ -124,9 +132,15 @@ LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lP
 // Hook dialog boxes
 LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
+    if (Msg == WM_WH_RESTORE) {
+        UINT_PTR timerId = (UINT_PTR)wParam;
+        RestoreWindow(hWnd, Msg, timerId, lParam);
+        // We handled the restore; no further processing needed.
+        return FALSE;
+    }
+
     if (Msg == WM_NCCALCSIZE
      && FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original)) {
-        // return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
         return TRUE;
     }
 
