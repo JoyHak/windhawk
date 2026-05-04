@@ -22,7 +22,6 @@ Fixes white flashes when opening new windows.
 */
 // ==/WindhawkModReadme==
 
-#include <unordered_map>
 #include <windhawk_utils.h>
 
 decltype(&DefWindowProcA) DefWindowProcA_Original = nullptr;
@@ -30,41 +29,7 @@ decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
 decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
-using DefProcCallback = LRESULT (WINAPI *)(HWND, UINT, WPARAM, LPARAM);
-
-struct CallbackArgs {
-    HWND hWnd;
-    UINT Msg;
-    WPARAM wParam;
-    LPARAM lParam;
-
-    // called by timer to run original handler
-    DefProcCallback restore; 
-};
-
-static std::unordered_map<UINT_PTR, CallbackArgs> g_filledWindows;
-static UINT_PTR g_timerCounter = 1;
 static HBRUSH g_windowBrush = CreateSolidBrush(0x00191919); // COLORREF: 0x00BBGGRR
-static const UINT WM_WH_RESTORE = WM_APP + 0x101;
-
-
-VOID CALLBACK RestoreWindow(HWND /*hWnd*/, UINT /*uMsg*/, UINT_PTR idEvent, DWORD /*dwTime*/)
-{
-    // Restores the window's contents by calling its original procedure.
-    auto it = g_filledWindows.find(idEvent);
-    if (it == g_filledWindows.end())
-        return;
-
-    CallbackArgs args = it->second;
-    args.restore(args.hWnd, args.Msg, args.wParam, args.lParam);
-
-    // Force non-client repaint so titlebar/frame appear immediately.
-    // RDW_FRAME invalidates the frame; RDW_UPDATENOW causes immediate paint.
-    RedrawWindow(args.hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
-
-    // if (KillTimer(args.hWnd, idEvent))
-        g_filledWindows.erase(it);
-}
 
 static bool FillWindow(
     HWND hWnd,
@@ -75,15 +40,19 @@ static bool FillWindow(
 {
     // Fills the window with a rectangle, 
     // preventing it from being filled with a white background.
-
+    
+    if (Msg != WM_NCCALCSIZE)
+        return false;
+    
     // Skip children and already-visible windows
     LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    // if (style & WS_CHILD)
     if ((style & WS_CHILD) || (style & WS_VISIBLE))
         return false;
 
-    // Skip 1px areas
+    // // Skip 1px areas
     RECT rect;
-    if (!GetClientRect(hWnd, &rect))
+    if (!GetClientRect(hWnd, &rect)) 
         return false;
 
     int width = rect.right - rect.left;
@@ -91,40 +60,37 @@ static bool FillWindow(
     if (width <= 1 || height <= 1)
         return false;
 
-    // FillRect((HDC)wParam, &rect, g_windowBrush);
-    // InvalidateRect(hWnd, NULL, NULL);
-
-    HDC hdc = GetDC(hWnd);
-    if (hdc) {
-        FillRect(hdc, &rect, g_windowBrush);
-        ReleaseDC(hWnd, hdc);
-    } else {
-        FillRect((HDC)wParam, &rect, g_windowBrush);
+    if (wParam) {
+        // Calc mode (dialogs)
+        NCCALCSIZE_PARAMS* params = (NCCALCSIZE_PARAMS*)lParam;
+        if (!params) return false;
+        
+        //  Call original FIRST to calc valid rects
+        RECT origClient;
+        CopyRect(&origClient, &params->rgrc[0]);
+        DefWindowProcW_Original(hWnd, Msg, FALSE, (LPARAM)&origClient);  // Calc
+        
+        // Fill using orig rect (safe HDC now valid)
+        HDC hdc = (HDC)wParam;  // May be valid post-orig
+        FillRect(hdc, &origClient, g_windowBrush);
+        
+        // Copy calc'd client back (preserves NC/titlebar)
+        CopyRect(&params->rgrc[0], &origClient);
+        // WVR_VALIDRECTS implicit
+    } else {  
+        // Simple RECT (windows)
+        RECT* rect = (RECT*)lParam;
+        FillRect((HDC)wParam, rect, g_windowBrush);
     }
 
-    // Schedule restore
-    UINT_PTR timerId = ++g_timerCounter;
-    g_filledWindows[timerId] = { hWnd, Msg, wParam, lParam, restore };
-    // SetTimer(hWnd, timerId, USER_TIMER_MINIMUM, RestoreWindow);
-    PostMessageW(hWnd, WM_WH_RESTORE, timerId, 0);
-
-    return true;
+    return TRUE;
 }
 
 // Hook default windows
 LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
-    if (Msg == WM_WH_RESTORE) {
-        UINT_PTR timerId = (UINT_PTR)wParam;
-        RestoreWindow(hWnd, Msg, timerId, lParam);
-        // We handled the restore; no further processing needed.
-        return FALSE;
-    }
-
-    if (Msg == WM_NCCALCSIZE
-     && FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original)) {
+    if (FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original))
         return TRUE;
-    }
 
     return DefWindowProcW_Original(hWnd, Msg, wParam, lParam);
 }
@@ -132,17 +98,8 @@ LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lP
 // Hook dialog boxes
 LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
-    if (Msg == WM_WH_RESTORE) {
-        UINT_PTR timerId = (UINT_PTR)wParam;
-        RestoreWindow(hWnd, Msg, timerId, lParam);
-        // We handled the restore; no further processing needed.
-        return FALSE;
-    }
-
-    if (Msg == WM_NCCALCSIZE
-     && FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original)) {
+    if (FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original))
         return TRUE;
-    }
 
     return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
 }
@@ -166,10 +123,4 @@ void Wh_ModUninit()
         DeleteObject(g_windowBrush);
         g_windowBrush = nullptr;
     }
-
-    for (auto &p : g_filledWindows) {
-        KillTimer(p.second.hWnd, p.first);
-    }
-
-    g_filledWindows.clear();
 }
