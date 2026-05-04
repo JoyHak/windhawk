@@ -30,6 +30,7 @@ Fixes white flashes when opening new windows.
 
 static const UINT_PTR WH_SUBCLASS_ID = 0xFEEDBEEF;
 
+/*
 // Helper: detect layered / DWM-composited windows we should skip
 static bool IsWindowSkippable(HWND hWnd) {
     LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
@@ -45,33 +46,43 @@ static bool IsWindowSkippable(HWND hWnd) {
          || (exStyle & WS_EX_LAYERED))
          
 }
+*/
 
 LRESULT CALLBACK FillWindow(
     HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
     UINT_PTR uIdSubclass, DWORD_PTR /*dwRefData*/
 ) {
+    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);    
+
     switch (uMsg) {
     case WM_ERASEBKGND: {
-        if (IsWindowSkippable(hWnd))
+        if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
             break;
 
         // wParam is HDC for WM_ERASEBKGND (may be NULL)
         HDC hdc = (HDC)wParam;
         BOOL needRelease = FALSE;
-        if (!hdc) { hdc = GetDC(hWnd); needRelease = TRUE; }
+
+        if (!hdc) { 
+            hdc = GetDC(hWnd); 
+            needRelease = TRUE; 
+        }
 
         RECT rc;
         if (GetClientRect(hWnd, &rc))
             FillRect(hdc, &rc, g_windowBrush);
 
-        if (needRelease) ReleaseDC(hWnd, hdc);
+        if (needRelease) 
+            ReleaseDC(hWnd, hdc);
 
+        Wh_Log(L"WM_ERASEBKGND %d (msg: 0x%04x)", hWnd, uMsg);
         // Indicate we handled erase background
         return 1;
     }
 
     case WM_NCPAINT: {
-        if (IsWindowSkippable(hWnd))
+        if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
             break;
 
         // Non-client paint: get full window DC and paint the whole window rect.
@@ -83,6 +94,7 @@ LRESULT CALLBACK FillWindow(
                 int h = wr.bottom - wr.top;
                 RECT fill = { 0, 0, w, h };
                 FillRect(hdc, &fill, g_windowBrush);
+                Wh_Log(L"WM_NCPAINT %d (msg: 0x%04x)", hWnd, uMsg);
             }
             ReleaseDC(hWnd, hdc);
         }
@@ -95,7 +107,8 @@ LRESULT CALLBACK FillWindow(
 
     case WM_NCDESTROY:
         // Clean up subclass entry
-        RemoveWindowSubclass(hWnd, FillWindow, uIdSubclass);
+        RemoveWindowSubclass(hWnd, Wh_SubclassProc, uIdSubclass);
+        Wh_Log(L"Remove %d (msg: 0x%04x)", hWnd, uMsg);
         break;
     }
 
