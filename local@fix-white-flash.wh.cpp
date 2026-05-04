@@ -25,135 +25,126 @@ Fixes white flashes when opening new windows.
 #include <unordered_map>
 #include <windhawk_utils.h>
 
-struct TimerData {
+decltype(&DefWindowProcA) DefWindowProcA_Original = nullptr;
+decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
+decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
+decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
+
+using DefProcCallback = LRESULT (WINAPI *)(HWND, UINT, WPARAM, LPARAM);
+
+struct CallbackArgs {
     HWND hWnd;
     UINT Msg;
     WPARAM wParam;
     LPARAM lParam;
+
+    // called by timer to run original handler
+    DefProcCallback restore; 
 };
 
-std::unordered_map<UINT_PTR, TimerData> g_filledWindows;
-UINT_PTR g_timerCounter = 1;
+static std::unordered_map<UINT_PTR, CallbackArgs> g_filledWindows;
+static UINT_PTR g_timerCounter = 1;
+static HBRUSH g_windowBrush = CreateSolidBrush(0x00191919); // COLORREF: 0x00BBGGRR
 
-const HBRUSH g_windowBrush = CreateSolidBrush(0x191919);
+VOID CALLBACK RestoreWindow(HWND /*hWnd*/, UINT /*uMsg*/, UINT_PTR idEvent, DWORD /*dwTime*/)
+{
+    // Restores the window's contents by calling its original procedure.
+    auto it = g_filledWindows.find(idEvent);
+    if (it == g_filledWindows.end())
+        return;
 
+    CallbackArgs args = it->second;
+    // args.restore(args.hWnd, args.Msg, args.wParam, args.lParam);
+    args.restore(args.hWnd, WM_NCCALCSIZE, args.wParam, args.lParam);
+    args.restore(args.hWnd, WM_MOVE, args.wParam, args.lParam);
+    args.restore(args.hWnd, WM_ERASEBKGND, args.wParam, args.lParam);
+
+    // Force non-client repaint so titlebar/frame appear immediately.
+    // RDW_FRAME invalidates the frame; RDW_UPDATENOW causes immediate paint.
+    // RedrawWindow(args.hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+    UpdateWindow(args.hWnd);
+
+    if (KillTimer(args.hWnd, idEvent))
+        g_filledWindows.erase(it);
+}
+
+static bool FillWindow(
+    HWND hWnd,
+    UINT Msg,
+    WPARAM wParam,
+    LPARAM lParam,
+    DefProcCallback restore)
+{
+    // Fills the window with a rectangle, 
+    // preventing it from being filled with a white background.
+
+    // Skip children and already-visible windows
+    LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    // if (style & WS_CHILD)
+    if ((style & WS_CHILD) || (style & WS_VISIBLE))
+        return false;
+
+    // // Skip 1px areas
+    RECT rect;
+    if (!GetClientRect(hWnd, &rect)) 
+        return false;
+
+    int width = rect.right - rect.left;
+    int height = rect.bottom - rect.top;
+    if (width <= 1 || height <= 1)
+        return false;
+
+    HDC hdc = GetWindowDC(hWnd);
+    if (hdc) {
+        FillRect(hdc, &rect, g_windowBrush);
+        ReleaseDC(hWnd, hdc);
+    } else if (wParam) {
+        FillRect((HDC)wParam, &rect, g_windowBrush);
+    } else {
+        return false;
+    }
+
+    // InvalidateRect(hWnd, NULL, NULL);
+
+    // Schedule restore
+    UINT_PTR timerId = ++g_timerCounter;
+    g_filledWindows[timerId] = { hWnd, Msg, wParam, lParam, restore };
+    SetTimer(hWnd, timerId, USER_TIMER_MINIMUM, RestoreWindow);
+
+    return true;
+}
 
 // Hook default windows
-decltype(&DefWindowProcW) DefWindowProcW_Original;
-
-VOID CALLBACK DelayWindowProc(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
-{    
-    // Restore window background
-    auto it = g_filledWindows.find(idEvent);
-    if (it != g_filledWindows.end())
-    {       
-        TimerData data = it->second;
-        g_filledWindows.erase(it);
-        KillTimer(hWnd, idEvent);
-        
-        Wh_Log(L"Restore %d (msg: %x)", data.hWnd, data.Msg);
-        DefWindowProcW_Original(data.hWnd, data.Msg, data.wParam, data.lParam);      
-        return;
-    }
-    // Wh_Log(L"Timer is not killed!");
-    // throw std::runtime_error("Unable to restore window rendering (timer is not killed");
-}
-
-#define WindowProc DefWindowProcW_Original(hWnd, Msg, wParam, lParam);
-
 LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
-{       
-    // Fill the window with non-white rectangle.
-    // Other messages should be ignored, otherwise filling won't work.
-    // if (Msg == WM_DWMNCRENDERINGCHANGED && !IsWindowVisible(hWnd))
-    if (Msg != WM_NCCALCSIZE)   
-        return WindowProc;
-    
-    // Skip childs and rendered windows
-    LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    if ((style & WS_CHILD) || (style & WS_VISIBLE))
-        return WindowProc;
+{
+    if (Msg == WM_NCCALCSIZE
+     && FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original)) {
+        return TRUE;
+    }
 
-    RECT rect;
-    if (!GetClientRect(hWnd, &rect))
-        return WindowProc;
-    
-    int width = rect.right - rect.left;
-    int height = rect.bottom - rect.top;
-    if (width <= 1 || height <= 1) 
-        return WindowProc;   
-    
-    Wh_Log(L"Fill %d (msg: %x)", hWnd, Msg);
-    FillRect((HDC)wParam, &rect, g_windowBrush);
-
-    // Remove rectangle later
-    UINT_PTR timerId = ++g_timerCounter;
-    g_filledWindows[timerId] = {hWnd, Msg, wParam, lParam};           
-    SetTimer(hWnd, timerId, 100, DelayWindowProc);
-
-    return true;
-}  
-
+    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam);
+}
 
 // Hook dialog boxes
-decltype(&DefDlgProcW) DefDlgProcW_Original;
-
-VOID CALLBACK DelayDialogProc(HWND hWnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
-{    
-    // Restore window background
-    auto it = g_filledWindows.find(idEvent);
-    if (it != g_filledWindows.end())
-    {       
-        TimerData data = it->second;
-        g_filledWindows.erase(it);
-        KillTimer(hWnd, idEvent);
-        
-        Wh_Log(L"Restore %d (msg: %x)", data.hWnd, data.Msg);
-        DefDlgProcW_Original(data.hWnd, data.Msg, data.wParam, data.lParam);      
-        return;
+LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
+{
+    if (Msg == WM_NCCALCSIZE
+     && FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original)) {
+        // return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
+        return TRUE;
     }
-    // Wh_Log(L"Timer is not killed!");
-    // throw std::runtime_error("Unable to restore window rendering (timer is not killed");
-}
 
-#define DialogProc DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
-
-LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
-    // Fill the dialog with non-white rectangle.
-    if (Msg != WM_NCCALCSIZE)   
-        return DialogProc;
-    
-    // Skip dialog controls and rendered windows
-    LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    if ((style & WS_CHILD) || (style & WS_VISIBLE))
-        return DialogProc;
-
-    RECT rect;
-    if (!GetClientRect(hWnd, &rect))
-        return DialogProc;
-    
-    int width = rect.right - rect.left;
-    int height = rect.bottom - rect.top;
-    if (width <= 1 || height <= 1) 
-        return DialogProc;   
-    
-    Wh_Log(L"Fill %d (msg: %x)", hWnd, Msg);
-    FillRect((HDC)wParam, &rect, g_windowBrush);
-
-    // Remove rectangle later
-    UINT_PTR timerId = ++g_timerCounter;
-    g_filledWindows[timerId] = {hWnd, Msg, wParam, lParam};           
-    SetTimer(hWnd, timerId, 10, DelayDialogProc);
-
-    return true;
+    return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
 }
 
 
 BOOL Wh_ModInit()
 {
-    if (!WindhawkUtils::SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
-        Wh_Log(L"Failed to hook DefWindowProcW!");
-    if (!WindhawkUtils::SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
+    using WindhawkUtils::SetFunctionHook;
+
+    // if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
+    //     Wh_Log(L"Failed to hook DefWindowProcW!");
+    if (!SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
         Wh_Log(L"Failed to hook DefDlgProcW!");
 
     return true;
