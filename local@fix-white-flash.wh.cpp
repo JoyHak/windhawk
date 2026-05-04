@@ -5,8 +5,7 @@
 // @version         0.2
 // @author          Rafaello
 // @github          https://github.com/JoyHak
-// @include         notepad++.exe
-// @include         xyplorer.exe
+// @include         *
 // @compilerOptions -lGdi32
 // ==/WindhawkMod==
 
@@ -42,30 +41,30 @@ static bool ShouldSkip(HWND hWnd) {
     if (g_filledWindows.contains(hWnd))
         return true;
 
-    // Only top-level unrendered windows
-    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+    HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+    if (g_filledWindows.contains(hRoot))
+        return true;
 
-    return ((style & WS_CHILD) /* || (style & WS_VISIBLE) */ || (exStyle & WS_EX_LAYERED));
+    // Only top-level unrendered windows
+    // LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    // LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+
+    // return ((style & WS_CHILD) /* || (style & WS_VISIBLE) */ || (exStyle & WS_EX_LAYERED));
+    // return (exStyle & WS_EX_LAYERED);
+    return false;
 }
 
-static LRESULT FillWindow(
-    HWND hWnd,
-    UINT Msg,
-    WPARAM wParam,
-    LPARAM lParam,
-    DefProcCallback restore)
-{
+static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCallback restore) {
     // Covers the white background with a colored rectangle while the window is rendering.
-
     switch (Msg) {
     case WM_NCPAINT: {
-        // This message usually appears first.
+        // This message usually appears first 
+        // and it's common for windows.
         // We're painting the non-client area first and 
         // then restore() draws chrome elements 
         // (caption buttons, borders) on top of it.
         if (ShouldSkip(hWnd))
-            break;
+             break;
             
         HDC hdc = GetWindowDC(hWnd);  // includes NC
         if (!hdc) 
@@ -84,14 +83,15 @@ static LRESULT FillWindow(
         FillRect(hdc, &rect, BRUSH);
         ReleaseDC(hWnd, hdc);
         Wh_Log(L"Paint rectangle %d (msg: 0x%04x)", hWnd, Msg);
-        // The g_filledWindows flag is not set here because 
-        // we've created the background but have not yet 
-        // filled the window. 
-        // The message below handles this.
-
+        // TODO: "paint on resize/agressive painting" checkbox
+        
+        // HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+        // g_filledWindows[hRoot] = true;
+        // g_filledWindows[hWnd] = true;
         break;
     }
     case WM_ERASEBKGND: {
+        // This message is common for dialogs.
         // Apply the rectangle fill and cover the
         // white background during window rendering.
         // It will be removed later so that the 
@@ -102,11 +102,6 @@ static LRESULT FillWindow(
         RECT rect;
         if (!GetClientRect(hWnd, &rect))
             break;
-
-        // int width = rect.right - rect.left;
-        // int height = rect.bottom - rect.top;
-        // if (width <= 1 || height <= 1)
-        //     return FILL_ERROR;
 
         // HDC hdc = GetWindowDC(hWnd);
         HDC hdc = GetDC(hWnd);
@@ -124,12 +119,21 @@ static LRESULT FillWindow(
             // return FILL_ERROR;
         }
 
+        HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+        g_filledWindows[hRoot] = true;
+        g_filledWindows[hWnd]  = true;
+        break;
+    }
+    case WM_ACTIVATEAPP: {
+        // Window is rendered, don't paint again
+        
+        HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+        g_filledWindows[hRoot] = true;
         g_filledWindows[hWnd] = true;
         break;
     }
-    
     case WM_NCDESTROY: {
-        // Window is rendered, ensure cleanup
+        // Window is destroyed, forget the flag
         // RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
         // UpdateWindow(hWnd);
         auto it = g_filledWindows.find(hWnd);
