@@ -2,11 +2,12 @@
 // @id              fix-white-flash
 // @name            Fix white flashes for all windows
 // @description     Fixes white flashes when opening new window.
-// @version         0.2
+// @version         0.3
 // @author          Rafaello
 // @github          https://github.com/JoyHak
-// @include         *
-// @compilerOptions -lGdi32
+// @include         notepad++.exe
+// @include         explorer.exe
+// @compilerOptions -lGdi32 -lComctl32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -22,120 +23,103 @@ Fixes white flashes when opening new windows.
 */
 // ==/WindhawkModReadme==
 
-#include <unordered_map>
-#include <windhawk_utils.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <commctrl.h> // SetWindowSubclass / DefSubclassProc
+// #include <dwmapi.h>
 
-decltype(&DefWindowProcA) DefWindowProcA_Original = nullptr;
-decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
-decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
-decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
+static const UINT_PTR WH_SUBCLASS_ID = 0xFEEDBEEF;
 
-using DefProcCallback = LRESULT (WINAPI *)(HWND, UINT, WPARAM, LPARAM);
+// Helper: detect layered / DWM-composited windows we should skip
+static bool IsWindowSkippable(HWND hWnd) {
+    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
 
-struct CallbackArgs {
-    HWND hWnd;
-    UINT Msg;
-    WPARAM wParam;
-    LPARAM lParam;
+    // DWM check (requires -ldwmapi.lib)
+    // BOOL isComposition = FALSE;
+    // DwmIsCompositionEnabled(&isComposition);
+    // if (isComposition)
 
-    // called by timer to run original handler
-    DefProcCallback restore; 
-};
-
-static std::unordered_map<UINT_PTR, CallbackArgs> g_filledWindows;
-static UINT_PTR g_timerCounter = 1;
-static HBRUSH g_windowBrush = CreateSolidBrush(0x00191919); // COLORREF: 0x00BBGGRR
-
-VOID CALLBACK RestoreWindow(HWND /*hWnd*/, UINT /*uMsg*/, UINT_PTR idEvent, DWORD /*dwTime*/)
-{
-    // Restores the window's contents by calling its original procedure.
-    auto it = g_filledWindows.find(idEvent);
-    if (it == g_filledWindows.end())
-        return;
-
-    CallbackArgs args = it->second;
-    args.restore(args.hWnd, args.Msg, args.wParam, args.lParam);
-
-    // Force non-client repaint so titlebar/frame appear immediately.
-    // RDW_FRAME invalidates the frame; RDW_UPDATENOW causes immediate paint.
-    // RedrawWindow(args.hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
-    // UpdateWindow(args.hWnd);
-
-    if (KillTimer(args.hWnd, idEvent))
-        g_filledWindows.erase(it);
+    return ((style & WS_CHILD)); 
+         || (style & WS_VISIBLE)
+         || (exStyle & WS_EX_LAYERED))
+         
 }
 
-static bool FillWindow(
-    HWND hWnd,
-    UINT Msg,
-    WPARAM wParam,
-    LPARAM lParam,
-    DefProcCallback restore)
-{
-    // Fills the window with a rectangle, 
-    // preventing it from being filled with a white background.
+LRESULT CALLBACK FillWindow(
+    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR /*dwRefData*/
+) {
+    switch (uMsg) {
+    case WM_ERASEBKGND: {
+        if (IsWindowSkippable(hWnd))
+            break;
 
-    // Skip children and already-visible windows
-    LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    // if (style & WS_CHILD)
-    if ((style & WS_CHILD) || (style & WS_VISIBLE))
-        return false;
+        // wParam is HDC for WM_ERASEBKGND (may be NULL)
+        HDC hdc = (HDC)wParam;
+        BOOL needRelease = FALSE;
+        if (!hdc) { hdc = GetDC(hWnd); needRelease = TRUE; }
 
-    // Skip 1px areas
-    RECT rect;
-    if (!GetClientRect(hWnd, &rect)) 
-        return false;
+        RECT rc;
+        if (GetClientRect(hWnd, &rc))
+            FillRect(hdc, &rc, g_windowBrush);
 
-    int width  = rect.right - rect.left;
-    int height = rect.bottom - rect.top;
-    if (width <= 1 || height <= 1)
-        return false;
+        if (needRelease) ReleaseDC(hWnd, hdc);
 
-    HDC hdc = GetWindowDC(hWnd);
-    if (hdc) {
-        FillRect(hdc, &rect, g_windowBrush);
-        ReleaseDC(hWnd, hdc);
-    } else if (wParam) {
-        FillRect((HDC)wParam, &rect, g_windowBrush);
-    } else {
-        // InvalidateRect(hWnd, NULL, NULL);
-        return false;
+        // Indicate we handled erase background
+        return 1;
     }
 
-    // Schedule restore
-    UINT_PTR timerId = ++g_timerCounter;
-    g_filledWindows[timerId] = { hWnd, Msg, wParam, lParam, restore };
-    SetTimer(hWnd, timerId, USER_TIMER_MINIMUM, RestoreWindow);
+    case WM_NCPAINT: {
+        if (IsWindowSkippable(hWnd))
+            break;
 
-    return true;
-}
+        // Non-client paint: get full window DC and paint the whole window rect.
+        HDC hdc = GetWindowDC(hWnd); // includes non-client
+        if (hdc) {
+            RECT wr;
+            if (GetWindowRect(hWnd, &wr)) {
+                int w = wr.right - wr.left;
+                int h = wr.bottom - wr.top;
+                RECT fill = { 0, 0, w, h };
+                FillRect(hdc, &fill, g_windowBrush);
+            }
+            ReleaseDC(hWnd, hdc);
+        }
 
-// Hook default windows
-LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
-{
-    if (Msg == WM_NCCALCSIZE
-     && FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original)) {
-        return TRUE;
+        // Returning 0 might be fine — we've painted non-client. Some classes expect defproc.
+        // Let the default non-client paint still run to draw frame elements on top.
+        // So fall through to DefSubclassProc below instead of returning immediately.
+        break;
     }
 
-    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam);
-}
-
-// Hook dialog boxes
-LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
-{
-    if (Msg == WM_NCCALCSIZE
-     && FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original)) {
-        // return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
-        return TRUE;
+    case WM_NCDESTROY:
+        // Clean up subclass entry
+        RemoveWindowSubclass(hWnd, FillWindow, uIdSubclass);
+        break;
     }
 
-    return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
+    // Default behavior for everything else
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
+    if (Msg == WM_NCCREATE || Msg == WM_CREATE)
+        SetWindowSubclass(hWnd, FillWindow, WH_SUBCLASS_ID, 0);
+
+    // Forward message normally
+    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam)
+}
+
+LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
+    if (Msg == WM_INITDIALOG)
+        SetWindowSubclass(hWnd, FillWindow, WH_SUBCLASS_ID, 0);
+
+    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam)
 }
 
 
-BOOL Wh_ModInit()
-{
+BOOL Wh_ModInit() {
     using WindhawkUtils::SetFunctionHook;
 
     if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
@@ -146,16 +130,9 @@ BOOL Wh_ModInit()
     return true;
 }
 
-void Wh_ModUninit()
-{
+void Wh_ModUninit() {
     if (g_windowBrush) {
         DeleteObject(g_windowBrush);
         g_windowBrush = nullptr;
     }
-
-    for (auto &p : g_filledWindows) {
-        KillTimer(p.second.hWnd, p.first);
-    }
-
-    g_filledWindows.clear();
 }
