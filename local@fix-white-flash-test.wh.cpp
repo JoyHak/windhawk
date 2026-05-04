@@ -2,12 +2,11 @@
 // @id              fix-white-flash-test
 // @name            Fix white flashes for all windows (test)
 // @description     Fixes white flashes when opening new window.
-// @version         0.2
+// @version         0.0.3
 // @author          Rafaello
 // @github          https://github.com/JoyHak
 // @include         notepad++.exe
-// @include         xyplorer.exe
-// @compilerOptions -lGdi32
+// @compilerOptions -lGdi32 -lComctl32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -23,68 +22,44 @@ Fixes white flashes when opening new windows.
 */
 // ==/WindhawkModReadme==
 
-#include <unordered_map>
 #include <windhawk_utils.h>
+#include <commctrl.h>       // SetWindowSubclass, DefSubclassProc
+#include <unordered_map>    // sub-classed windows
+
 
 decltype(&DefWindowProcA) DefWindowProcA_Original = nullptr;
 decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
 decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
-using DefProcCallback = LRESULT (WINAPI *)(HWND, UINT, WPARAM, LPARAM);
+static const UINT_PTR     SUBCLASS_ID             = 0xFEEDBEEF;
+static const HBRUSH       BRUSH                   = CreateSolidBrush(0x00191919); // 0x00BBGGRR
 
-static const LRESULT FILL_ERROR = -1;
-static std::unordered_map<HWND, bool> g_filledWindows;
-static const HBRUSH BRUSH = CreateSolidBrush(0x00191919);
+static std::unordered_map<HWND, bool> g_filledWindows;    // prevent any double fill/remove actions
 
-static bool ShouldSkip(HWND hWnd) {
-    // if (g_filledWindows.contains(hWnd) && g_filledWindows.at(hWnd))
-    //     return true;
 
-    if (g_filledWindows.contains(hWnd)) {
-        if (g_filledWindows.at(hWnd)) {
-            Wh_Log(L"true");
-            return true;
-        }
+static void RemoveWindowFiller(HWND hWnd, UINT_PTR uIdSubclass);
 
-        if (!g_filledWindows.at(hWnd))
-            Wh_Log(L"false");
-    }
-
-    // Only top-level unrendered windows
-    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
-
-    if ((style & WS_CHILD) /* || (style & WS_VISIBLE) */ || (exStyle & WS_EX_LAYERED))
-        return true;
-
-    return false;
-
-}
-
-static LRESULT FillWindow(
-    HWND hWnd,
-    UINT Msg,
-    WPARAM wParam,
-    LPARAM lParam,
-    DefProcCallback restore)
-{
-    switch (Msg) {
+LRESULT CALLBACK FillWindow(
+    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR /*dwRefData*/
+) {
+    switch (uMsg) {
     case WM_NCPAINT: {
         // This message usually appears first.
         // We're painting the non-client area first and 
         // then DefSubclassProc draws chrome elements 
         // (caption buttons, borders) on top of it.
-        if (ShouldSkip(hWnd))
-            return FILL_ERROR;
+        if (g_filledWindows[hWnd])
+            break;
             
         HDC hdc = GetWindowDC(hWnd);  // includes NC
         if (!hdc) 
-             return FILL_ERROR;
+             break;
 
         RECT rect;
         if (!GetWindowRect(hWnd, &rect))
-            return FILL_ERROR;
+            break;
 
         rect = { 
             0, 0,  // left upper corner
@@ -94,98 +69,122 @@ static LRESULT FillWindow(
 
         FillRect(hdc, &rect, BRUSH);
         ReleaseDC(hWnd, hdc);
-        Wh_Log(L"Paint rectangle %d (msg: 0x%04x)", hWnd, Msg);
+        Wh_Log(L"Paint %d (msg: 0x%04x)", hWnd, uMsg);
+
         // The g_filledWindows flag is not set here because 
         // we've created the background but have not yet 
         // filled the window. 
         // The message below handles this.
-
-        if (g_filledWindows.contains(hWnd))
-            Wh_Log(L"filled: %d", g_filledWindows.at(hWnd));
-        return restore(hWnd, Msg, wParam, lParam);
+        break;
     }
     case WM_ERASEBKGND: {
         // Apply the rectangle fill and cover the
         // white background during window rendering.
         // It will be removed later so that the 
         // window elements become visible.
-        if (ShouldSkip(hWnd))
-            return FILL_ERROR;
+        if (g_filledWindows[hWnd])
+            break;
 
         RECT rect;
         if (!GetClientRect(hWnd, &rect))
-            return FILL_ERROR;
+            break;
 
         // int width = rect.right - rect.left;
         // int height = rect.bottom - rect.top;
         // if (width <= 1 || height <= 1)
-        //     return FILL_ERROR;
+        //     break;
 
         // HDC hdc = GetWindowDC(hWnd);
         HDC hdc = GetDC(hWnd);
         if (hdc) {
             FillRect(hdc, &rect, BRUSH);
             ReleaseDC(hWnd, hdc);
-            Wh_Log(L"Fill by hdc %d (msg: 0x%04x)", hWnd, Msg);
+            Wh_Log(L"Fill by hdc %d (msg: 0x%04x)", hWnd, uMsg);
         } else if (wParam) {
             FillRect((HDC)wParam, &rect, BRUSH);
-            Wh_Log(L"Fill by wParam %d (msg: 0x%04x)", hWnd, Msg);
+            Wh_Log(L"Fill by wParam %d (msg: 0x%04x)", hWnd, uMsg);
         } else {
             InvalidateRect(hWnd, NULL, NULL);
-            Wh_Log(L"Invalidate %d (msg: 0x%04x)", hWnd, Msg);
             // InvalidateRect(hWnd, &rect, TRUE);
-            // return FILL_ERROR;
+            Wh_Log(L"Invalidate rect %d (msg: 0x%04x)", hWnd, uMsg);
+            // break;
         }
 
+        // Indicate that we've handled erase
         g_filledWindows[hWnd] = true;
-
-        if (g_filledWindows.contains(hWnd))
-            Wh_Log(L"filled: %d", g_filledWindows.at(hWnd));
-        return restore(hWnd, Msg, wParam, lParam);
-    }
-    /* 
-    case WM_ACTIVATE: {
-        // Window is rendered, ensure cleanup
-        // RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
-        // UpdateWindow(hWnd);
-        auto it = g_filledWindows.find(hWnd);
-        if (it != g_filledWindows.end()) {
-            g_filledWindows.erase(it);
-        }
-        return FILL_ERROR;
-    } 
-    */
-    } // switch
-
-    return FILL_ERROR;
-}
-
-
-// Hook default windows
-LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
-{
-    if (Msg == WM_NCCALCSIZE
-     && FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcW_Original)) {
-        return TRUE;
+        return 1;
     }
 
-    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam);
-}
-
-// Hook dialog boxes
-LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
-{
-    LRESULT result = FillWindow(hWnd, Msg, wParam, lParam, DefDlgProcW_Original);
-    if (result != FILL_ERROR) {
+    case WM_PAINT: {
+        // Let the window perform its normal paint, 
+        // then remove our rectangle
+        LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
+        RemoveWindowFiller(hWnd, uIdSubclass);
         return result;
     }
 
-    return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);
+    case WM_NCDESTROY: {
+        // Window is going away, ensure cleanup
+        RemoveWindowFiller(hWnd, uIdSubclass);
+        break;
+    }
+    } // switch
+
+    // Perform window rendering
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+// Helpers
+static void SetWindowFiller(HWND hWnd) {
+    // Avoid double-install
+    if (g_filledWindows.find(hWnd) != g_filledWindows.end())
+        return;
+
+    // Only top-level unrendered windows
+    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    // LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+
+    if ((style & WS_CHILD) || (style & WS_VISIBLE) /*|| (exStyle & WS_EX_LAYERED)*/)
+        return;
+
+    if (SetWindowSubclass(hWnd, FillWindow, SUBCLASS_ID, 0)) {
+        g_filledWindows[hWnd] = false;
+        Wh_Log(L"Set for %d (%d total)", hWnd, g_filledWindows.size());
+    }
+}
+
+static void RemoveWindowFiller(HWND hWnd, UINT_PTR uIdSubclass) {
+    // Prevent double-cleaning in the future
+    auto it = g_filledWindows.find(hWnd);
+    if (it == g_filledWindows.end()) {
+        return;
+    } else {
+        g_filledWindows.erase(it);
+    }
+
+    RemoveWindowSubclass(hWnd, FillWindow, uIdSubclass);
+    // Wh_Log(L"Remove for %d", hWnd);
+}
+
+// Hook default windows
+LRESULT WINAPI DefWindowProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
+    if (Msg == WM_NCCREATE || Msg == WM_CREATE)
+        SetWindowFiller(hWnd);
+
+    return DefWindowProcW_Original(hWnd, Msg, wParam, lParam);   
+}
+
+// Hook dialog boxes
+LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
+    // if (Msg == WM_NCCREATE || Msg == WM_CREATE)
+    if (Msg == WM_INITDIALOG)
+        SetWindowFiller(hWnd);
+    return DefDlgProcW_Original(hWnd, Msg, wParam, lParam);  
 }
 
 
-BOOL Wh_ModInit()
-{
+// Initialize the mod
+BOOL Wh_ModInit() {
     using WindhawkUtils::SetFunctionHook;
 
     // if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
@@ -196,15 +195,16 @@ BOOL Wh_ModInit()
     return true;
 }
 
-void Wh_ModUninit()
-{
-    if (BRUSH) {
+void Wh_ModUninit() {
+    if (BRUSH)
         DeleteObject(BRUSH);
-    }
 
-    for (auto &win : g_filledWindows) {
-        RedrawWindow(win.first, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+    while (!g_filledWindows.empty()) {
+        auto it = g_filledWindows.begin();
+        HWND hWnd = it->first;
+        
+        // Wh_Log(L"Uninit %d", hWnd);
+        RemoveWindowSubclass(hWnd, FillWindow, SUBCLASS_ID);
+        g_filledWindows.erase(it);
     }
-
-    g_filledWindows.clear();
 }
