@@ -1,6 +1,15 @@
+<div align="center">   
 
+<img src="icon.png">
+<br><br>
+<a href="https://github.com/ramensoftware/windhawk-mods/discussions">
+<img src="https://img.shields.io/github/discussions-search?query=repo%3Aramensoftware%2Fwindhawk-mods&style=flat&logo=TheConversation&logoColor=white&label=Discussions&color=white" 
+alt="Discussions"></a>
 
-![icon](icon.png)
+<a href="https://windhawk.net/mods">
+<img src="https://img.shields.io/github/directory-file-count/ramensoftware/windhawk-mods%2Fmods?type=file&extension=cpp&style=flat&logo=cplusplus&label=Mods&color=black" alt="Mods"></a>
+<br>
+</div>
 
 This is local collection of Windhawk mods sources. The mods can be viewed on the [online mods catalog](https://windhawk.net/mods), and can be viewed and installed with [Windhawk](https://windhawk.net/).
 
