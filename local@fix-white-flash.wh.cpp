@@ -5,7 +5,7 @@
 // @version         0.2
 // @author          Rafaello
 // @github          https://github.com/JoyHak
-// @include         notepad++.exe
+// @include         *
 // @compilerOptions -lGdi32
 // ==/WindhawkMod==
 
@@ -54,15 +54,12 @@ VOID CALLBACK RestoreWindow(HWND /*hWnd*/, UINT /*uMsg*/, UINT_PTR idEvent, DWOR
         return;
 
     CallbackArgs args = it->second;
-    // args.restore(args.hWnd, args.Msg, args.wParam, args.lParam);
-    args.restore(args.hWnd, WM_NCCALCSIZE, args.wParam, args.lParam);
-    args.restore(args.hWnd, WM_MOVE, args.wParam, args.lParam);
-    args.restore(args.hWnd, WM_ERASEBKGND, args.wParam, args.lParam);
+    args.restore(args.hWnd, args.Msg, args.wParam, args.lParam);
 
     // Force non-client repaint so titlebar/frame appear immediately.
     // RDW_FRAME invalidates the frame; RDW_UPDATENOW causes immediate paint.
     // RedrawWindow(args.hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
-    UpdateWindow(args.hWnd);
+    // UpdateWindow(args.hWnd);
 
     if (KillTimer(args.hWnd, idEvent))
         g_filledWindows.erase(it);
@@ -84,12 +81,12 @@ static bool FillWindow(
     if ((style & WS_CHILD) || (style & WS_VISIBLE))
         return false;
 
-    // // Skip 1px areas
+    // Skip 1px areas
     RECT rect;
     if (!GetClientRect(hWnd, &rect)) 
         return false;
 
-    int width = rect.right - rect.left;
+    int width  = rect.right - rect.left;
     int height = rect.bottom - rect.top;
     if (width <= 1 || height <= 1)
         return false;
@@ -101,10 +98,9 @@ static bool FillWindow(
     } else if (wParam) {
         FillRect((HDC)wParam, &rect, g_windowBrush);
     } else {
+        // InvalidateRect(hWnd, NULL, NULL);
         return false;
     }
-
-    // InvalidateRect(hWnd, NULL, NULL);
 
     // Schedule restore
     UINT_PTR timerId = ++g_timerCounter;
@@ -142,8 +138,8 @@ BOOL Wh_ModInit()
 {
     using WindhawkUtils::SetFunctionHook;
 
-    // if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
-    //     Wh_Log(L"Failed to hook DefWindowProcW!");
+    if (!SetFunctionHook(DefWindowProcW, DefWindowProcW_Hook, &DefWindowProcW_Original))
+        Wh_Log(L"Failed to hook DefWindowProcW!");
     if (!SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
         Wh_Log(L"Failed to hook DefDlgProcW!");
 
