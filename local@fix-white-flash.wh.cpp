@@ -50,12 +50,16 @@ static bool ShouldSkip(HWND hWnd) {
     if (g_filledWindows.contains(hRoot))
         return true;
 
-    // Only top-level unrendered windows
-    // LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    // LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+    // Contains frame
+    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    if (!(style & WS_CAPTION) || !(style & WS_THICKFRAME))
+        return true; 
 
-    // return ((style & WS_CHILD) /* || (style & WS_VISIBLE) */ || (exStyle & WS_EX_LAYERED));
-    // return (exStyle & WS_EX_LAYERED);
+    // Top-level window
+    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+    if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
+        return true;
+
     return false;
 }
 
