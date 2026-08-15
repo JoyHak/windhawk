@@ -26,6 +26,8 @@ Fixes white flashes when opening new windows.
 #include <unordered_map>
 #include <windhawk_utils.h>
 
+#define DCX_USESTYLE      0x00010000L
+
 decltype(&DefWindowProcA) DefWindowProcA_Original = nullptr;
 decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
@@ -69,13 +71,23 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
         if (ShouldSkip(hWnd))
              break;
             
-        HDC hdc = GetWindowDC(hWnd);  // includes NC
+        HRGN hrgn = (HRGN)wParam;
+        HDC  hdc;
+        // paint the NC area
+        if (hrgn == (HRGN)1) {
+            hdc = GetDCEx(hWnd, NULL, DCX_WINDOW | DCX_USESTYLE | 0);
+        } else {
+            hdc = GetDCEx(hWnd, hrgn, DCX_WINDOW | DCX_USESTYLE | DCX_INTERSECTRGN);
+        }
+
         if (!hdc) 
-             break;
+            break;
 
         RECT rect;
-        if (!GetWindowRect(hWnd, &rect))
-             break;
+        if (!GetWindowRect(hWnd, &rect)) {
+            ReleaseDC(hWnd, hdc);
+            break;
+        }
 
         rect = { 
             0, 0,  // left upper corner
@@ -108,28 +120,21 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
         if (!GetClientRect(hWnd, &rect))
             break;
 
-        // HDC hdc = GetWindowDC(hWnd);
-        HDC hdc = GetDC(hWnd);
-        if (hdc) {
-            FillRect(hdc, &rect, BRUSH);
-            ReleaseDC(hWnd, hdc);
-            Wh_Log(L"Fill by hdc %d (msg: 0x%04x)", hWnd, Msg);
-        } else if (wParam) {
-            FillRect((HDC)wParam, &rect, BRUSH);
-            Wh_Log(L"Fill by wParam %d (msg: 0x%04x)", hWnd, Msg);
-        } else {
-            InvalidateRect(hWnd, NULL, NULL);
-            Wh_Log(L"Invalidate %d (msg: 0x%04x)", hWnd, Msg);
-            // InvalidateRect(hWnd, &rect, TRUE);
-            // return FILL_ERROR;
+        HDC hdc = (HDC)wParam;
+        if (!hdc) {
+            break;
         }
+
+        FillRect(hdc, &rect, BRUSH);
+        ReleaseDC(hWnd, hdc);
 
         HWND hRoot = GetAncestor(hWnd, GA_ROOT);
 
         std::lock_guard<std::mutex> lock(g_filledMutex);
         g_filledWindows[hRoot] = true;
         g_filledWindows[hWnd]  = true;
-        break;
+        // break;
+        return TRUE; // background erased - don't let the original erase it again
     }
     case WM_ACTIVATEAPP: {
         // Window is rendered, don't paint again
@@ -143,13 +148,20 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
     }
     case WM_NCDESTROY: {
         // Window is destroyed, forget the flag
-        // RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
-        // UpdateWindow(hWnd);
-
-        std::lock_guard<std::mutex> lock(g_filledMutex);
-        auto it = g_filledWindows.find(hWnd);
-        if (it != g_filledWindows.end()) {
-            g_filledWindows.erase(it);
+        {
+            std::lock_guard<std::mutex> lock(g_filledMutex);
+            auto it = g_filledWindows.find(hWnd);
+            if (it != g_filledWindows.end()) {
+                g_filledWindows.erase(it);
+            }
+        }
+        {
+            HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+            std::lock_guard<std::mutex> lock(g_filledMutex);
+            auto it = g_filledWindows.find(hRoot);
+            if (it != g_filledWindows.end()) {
+                g_filledWindows.erase(it);
+            }
         }
         break;
     }
