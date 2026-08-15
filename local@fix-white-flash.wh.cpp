@@ -35,10 +35,9 @@ decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
 using DefProcCallback = LRESULT (WINAPI *)(HWND, UINT, WPARAM, LPARAM);
 
+HBRUSH g_brush = nullptr;
 std::mutex g_filledMutex;
 std::unordered_map<HWND, bool> g_filledWindows;      // prevents painting after full rendering
-const HBRUSH BRUSH = CreateSolidBrush(0x00191919);   // represents color 0x00BBGGRR
-
 
 // Helpers
 static bool ShouldSkip(HWND hWnd) {
@@ -99,9 +98,8 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
             rect.bottom - rect.top          
         };
 
-        FillRect(hdc, &rect, BRUSH);
+        FillRect(hdc, &rect, g_brush);
         ReleaseDC(hWnd, hdc);
-        Wh_Log(L"Paint rectangle %d (msg: 0x%04x)", hWnd, Msg);
         // TODO: "paint on resize/agressive painting" checkbox
         
         HWND hRoot = GetAncestor(hWnd, GA_ROOT);
@@ -129,7 +127,7 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
             break;
         }
 
-        FillRect(hdc, &rect, BRUSH);
+        FillRect(hdc, &rect, g_brush);
         ReleaseDC(hWnd, hdc);
 
         HWND hRoot = GetAncestor(hWnd, GA_ROOT);
@@ -205,12 +203,18 @@ BOOL Wh_ModInit() {
     if (!SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
         Wh_Log(L"Failed to hook DefDlgProcW!");
 
+    g_brush = CreateSolidBrush(0x00191919);   // represents color 0x00BBGGRR
+    if (!g_brush) {
+        Wh_Log(L"Failed to create color brush!");
+        return false;
+    }
+
     return true;
 }
 
 void Wh_ModUninit() {
-    if (BRUSH) {
-        DeleteObject(BRUSH);
+    if (g_brush) {
+        DeleteObject(g_brush);
     }
 
     std::lock_guard<std::mutex> lock(g_filledMutex);
