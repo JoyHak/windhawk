@@ -2,7 +2,7 @@
 // @id              fix-white-flash
 // @name            Fix white flashes for all windows
 // @description     Fixes white flashes when opening new window.
-// @version         0.2
+// @version         0.1
 // @author          Rafaello
 // @github          https://github.com/JoyHak
 // @include         *
@@ -22,6 +22,7 @@ Fixes white flashes when opening new windows.
 */
 // ==/WindhawkModReadme==
 
+#include <mutex>
 #include <unordered_map>
 #include <windhawk_utils.h>
 
@@ -32,12 +33,14 @@ decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
 using DefProcCallback = LRESULT (WINAPI *)(HWND, UINT, WPARAM, LPARAM);
 
-static std::unordered_map<HWND, bool> g_filledWindows;      // prevents painting after full rendering
-static const HBRUSH BRUSH = CreateSolidBrush(0x00191919);   // represents color 0x00BBGGRR
+std::mutex g_filledMutex;
+std::unordered_map<HWND, bool> g_filledWindows;      // prevents painting after full rendering
+const HBRUSH BRUSH = CreateSolidBrush(0x00191919);   // represents color 0x00BBGGRR
 
 
 // Helpers
 static bool ShouldSkip(HWND hWnd) {
+    std::lock_guard<std::mutex> lock(g_filledMutex);
     if (g_filledWindows.contains(hWnd))
         return true;
 
@@ -85,9 +88,11 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
         Wh_Log(L"Paint rectangle %d (msg: 0x%04x)", hWnd, Msg);
         // TODO: "paint on resize/agressive painting" checkbox
         
-        // HWND hRoot = GetAncestor(hWnd, GA_ROOT);
-        // g_filledWindows[hRoot] = true;
-        // g_filledWindows[hWnd] = true;
+        HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+
+        std::lock_guard<std::mutex> lock(g_filledMutex);
+        g_filledWindows[hRoot] = true;
+        g_filledWindows[hWnd]  = true;
         break;
     }
     case WM_ERASEBKGND: {
@@ -120,6 +125,8 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
         }
 
         HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+
+        std::lock_guard<std::mutex> lock(g_filledMutex);
         g_filledWindows[hRoot] = true;
         g_filledWindows[hWnd]  = true;
         break;
@@ -128,6 +135,8 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
         // Window is rendered, don't paint again
         
         HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+
+        std::lock_guard<std::mutex> lock(g_filledMutex);
         g_filledWindows[hRoot] = true;
         g_filledWindows[hWnd] = true;
         break;
@@ -136,6 +145,8 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
         // Window is destroyed, forget the flag
         // RedrawWindow(hWnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
         // UpdateWindow(hWnd);
+
+        std::lock_guard<std::mutex> lock(g_filledMutex);
         auto it = g_filledWindows.find(hWnd);
         if (it != g_filledWindows.end()) {
             g_filledWindows.erase(it);
@@ -187,6 +198,7 @@ void Wh_ModUninit() {
         DeleteObject(BRUSH);
     }
 
+    std::lock_guard<std::mutex> lock(g_filledMutex);
     for (auto &win : g_filledWindows) {
         RedrawWindow(win.first, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
     }
