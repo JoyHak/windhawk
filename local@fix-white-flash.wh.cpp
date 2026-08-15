@@ -142,7 +142,6 @@ static LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, Def
     }
     case WM_ACTIVATEAPP: {
         // Window is rendered, don't paint again
-        
         HWND hRoot = GetAncestor(hWnd, GA_ROOT);
 
         std::lock_guard<std::mutex> lock(g_filledMutex);
@@ -215,8 +214,13 @@ void Wh_ModUninit() {
     }
 
     std::lock_guard<std::mutex> lock(g_filledMutex);
-    for (auto &win : g_filledWindows) {
-        RedrawWindow(win.first, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW);
+    for (auto& win : g_filledWindows) {
+        if (IsWindow(win.first)) {
+            RedrawWindow(
+                win.first, NULL, NULL,
+                RDW_FRAME | RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN
+            );
+        }
     }
 
     g_filledWindows.clear();
