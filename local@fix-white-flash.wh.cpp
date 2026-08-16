@@ -5,7 +5,31 @@
 // @version         0.1
 // @author          Rafaello
 // @github          https://github.com/JoyHak
-// @include         *
+// @include explorer.exe
+// @include *
+// @exclude csrss.exe
+// @exclude dwm.exe
+// @exclude winlogon.exe
+// @exclude services.exe
+// @exclude svchost.exe
+// @exclude lsass.exe
+// @exclude smss.exe
+// @exclude wininit.exe
+// @exclude conhost.exe
+// @exclude fontdrvhost.exe
+// @exclude audiodg.exe
+// @exclude wmic.exe
+// @exclude wmiapsrv.exe
+// @exclude wmiprvse.exe
+// @exclude alg.exe
+// @exclude nvcplui.exe
+// @exclude nvcontainer.exe
+// @exclude git.exe
+// @exclude windhawk-cli.exe
+// @exclude clang++.exe
+// @exclude clang-20.exe
+// @exclude ld.lld.exe
+// @exclude TextInputHost.exe
 // @compilerOptions -lGdi32
 // ==/WindhawkMod==
 
