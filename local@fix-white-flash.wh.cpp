@@ -103,6 +103,7 @@ using std::wstring;
 using lock_t = std::lock_guard<std::mutex>;
 using DefProcCallback = WNDPROC;
 
+// == Data ===
 
 struct ProcessData {
     DWORD processId = 0;
@@ -116,7 +117,6 @@ struct ProcessSettings {
     bool longerPaint;
 };
 
-
 struct {
     HBRUSH brush;
     bool aggressivePaint;
@@ -124,6 +124,7 @@ struct {
     std::unordered_map<wstring, ProcessSettings> processes;
 } g_cfg;
 
+// == Declarations ==
 
 std::mutex g_cfgMutex;
 std::mutex g_filledMutex;
@@ -138,63 +139,7 @@ decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
 decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
-
-// Helpers
-bool ShouldSkip(HWND hWnd, bool aggressivePaint) {
-    lock_t lock(g_filledMutex);
-    if (g_filledWindows.contains(hWnd))
-        return true;
-
-    HWND hRoot = GetAncestor(hWnd, GA_ROOT);
-    if (g_filledWindows.contains(hRoot))
-        return true;
-
-    if (aggressivePaint)
-        return false;
-
-    // Contains frame
-    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    if (!(style & WS_CAPTION) || !(style & WS_THICKFRAME))
-        return true; 
-
-    // Top-level window
-    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
-    if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
-        return true;
-
-    return false;
-}
-
-void MarkToSkip(HWND hWnd) {
-    // Mark this window as "rendered": 
-    // painting is no longer required
-    if (g_filledWindows.contains(hWnd))
-        return;
-
-    HWND hRoot = GetAncestor(hWnd, GA_ROOT);
-    
-    lock_t lock(g_filledMutex);
-    g_filledWindows[hRoot] = true;
-    g_filledWindows[hWnd]  = true;    
-}
-
-void RemoveMarkSkip(HWND hWnd) {
-    {
-        lock_t lock(g_filledMutex);
-        auto it = g_filledWindows.find(hWnd);
-        if (it != g_filledWindows.end()) {
-            g_filledWindows.erase(it);
-        }
-    }
-    {
-        HWND hRoot = GetAncestor(hWnd, GA_ROOT);
-        lock_t lock(g_filledMutex);
-        auto it = g_filledWindows.find(hRoot);
-        if (it != g_filledWindows.end()) {
-            g_filledWindows.erase(it);
-        }
-    }
-}
+// == Helpers ==
 
 int Clamp(int value, int low, int high) {
     if (value < low) 
@@ -212,6 +157,20 @@ COLORREF ToColor(int rgb) {
 
     return RGB(r, g, b);
 }
+
+wstring Trim(const wstring& str) {
+    size_t start = 0;
+    while (start < str.size() && iswspace(str[start])) {
+        start++;
+    }
+    size_t end = str.size();
+    while (end > start && iswspace(str[end - 1])) {
+        end--;
+    }
+    return str.substr(start, end - start);
+}
+
+// == Processes ==
 
 wstring GetProcessName(HWND hWnd) {
     DWORD ownerPid = 0;
@@ -287,6 +246,63 @@ ProcessSettings GetProcessSettings(HWND hWnd) {
     };
 }
 
+// == Main ==
+
+void RemoveMarkSkip(HWND hWnd) {
+    {
+        lock_t lock(g_filledMutex);
+        auto it = g_filledWindows.find(hWnd);
+        if (it != g_filledWindows.end()) {
+            g_filledWindows.erase(it);
+        }
+    }
+    {
+        HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+        lock_t lock(g_filledMutex);
+        auto it = g_filledWindows.find(hRoot);
+        if (it != g_filledWindows.end()) {
+            g_filledWindows.erase(it);
+        }
+    }
+}
+
+void MarkToSkip(HWND hWnd) {
+    // Mark this window as "rendered": 
+    // painting is no longer required
+    if (g_filledWindows.contains(hWnd))
+        return;
+
+    HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+    
+    lock_t lock(g_filledMutex);
+    g_filledWindows[hRoot] = true;
+    g_filledWindows[hWnd]  = true;    
+}
+
+bool ShouldSkip(HWND hWnd, bool aggressivePaint) {
+    lock_t lock(g_filledMutex);
+    if (g_filledWindows.contains(hWnd))
+        return true;
+
+    HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+    if (g_filledWindows.contains(hRoot))
+        return true;
+
+    if (aggressivePaint)
+        return false;
+
+    // Contains frame
+    LONG_PTR style   = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    if (!(style & WS_CAPTION) || !(style & WS_THICKFRAME))
+        return true; 
+
+    // Top-level window
+    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+    if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
+        return true;
+
+    return false;
+}
 
 LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCallback restore) {
     // Covers the white background with a colored rectangle while the window is rendering.
@@ -375,6 +391,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
     return restore(hWnd, Msg, wParam, lParam);
 }
 
+// == Settings ==
 
 template <typename... Args>
 int ParseColorSetting(PCWSTR valueName, Args... args) {
@@ -436,18 +453,6 @@ int ParseColorSetting(PCWSTR valueName, Args... args) {
 
     Wh_FreeStringSetting(value);
     return color;
-}
-
-wstring Trim(const wstring& str) {
-    size_t start = 0;
-    while (start < str.size() && iswspace(str[start])) {
-        start++;
-    }
-    size_t end = str.size();
-    while (end > start && iswspace(str[end - 1])) {
-        end--;
-    }
-    return str.substr(start, end - start);
 }
 
 template <typename... Args>
@@ -514,7 +519,8 @@ BOOL LoadSettings() {
     return FALSE;
 }
 
-// Hook rendering procedures
+// == Hook rendering procedures ==
+
 LRESULT WINAPI DefWindowProcA_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
     return FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcA_Original);
 }
