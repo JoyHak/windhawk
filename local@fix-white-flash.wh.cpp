@@ -134,6 +134,81 @@ decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
 // == Helpers ==
 
+#if __has_builtin(__builtin_dump_struct)
+/**
+* @brief Outputs structures and classes contents.
+* Displays public and private fields, their names and values.
+*/
+template<typename T>
+void Log(const T& obj) {
+    /**
+    * `__builtin_dump_struct` intrinsic returns narrow `char*` buffer (ANSI or UTF-8). 
+    * `Wh_Log` (macro around `InternalWh_Log_Wrapper`) expects `wchar_t*` (PCWSTR - wide UTF-16).
+    * We must convert the narrow bytes to UTF-16 using `MultiByteToWideChar` before passing to the `Wh_Log`.
+    *
+    * If we try to build a single char buffer by passing `sprintf` into intrinsic, 
+    * we must track the current write offset and guard against overflows. 
+    * So we use `to_wchar` closure with `vsnprintf` inside to ensure safety.
+    * https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
+    */
+    auto to_wchar = [](wstring &out, const char* format, auto&& ...args) {
+        if (!format) 
+            return;
+
+        // determine required size for narrow formatted string
+        int narrow_len = std::snprintf(
+            nullptr, 0, 
+            format, 
+            std::forward<decltype(args)>(args)...
+        );
+        if (narrow_len < 0) 
+            return;
+
+        // allocate narrow buffer and format into it (include space for terminating NUL)
+        std::string narrow;
+        narrow.resize(static_cast<size_t>(narrow_len) + 1);
+        std::snprintf(
+            narrow.data(), 
+            narrow.size(), 
+            format, 
+            std::forward<decltype(args)>(args)...
+        );
+
+        // convert narrow to wide
+        int wide_len = MultiByteToWideChar(
+            CP_ACP, 0, 
+            narrow.c_str(),
+            -1, nullptr, 0
+        );  
+
+        if (wide_len <= 0) 
+            return;
+
+        // wide_len includes terminating NUL; 
+        // resize to exclude the trailing null when appending
+        wstring wide;
+        wide.resize(static_cast<size_t>(wide_len) - 1);
+        
+        MultiByteToWideChar(
+            CP_ACP, 0,
+            narrow.c_str(), 
+            -1, wide.data(), 
+            wide_len
+        );
+
+        // append result to output
+        out += wide;
+    };
+
+    wstring out;
+    __builtin_dump_struct(&obj, to_wchar, out);
+
+    Wh_Log(L"%s", out.c_str());
+}
+#else 
+    #define Log(...) 
+#endif
+
 int Clamp(int value, int low, int high) {
     if (value < low) 
         return low;
@@ -407,7 +482,7 @@ class Cfg {
         }  
 
         // Wh_Log(L"Settings loaded");
-        // Log(s_global);
+        Log(s_global);
         return false;
     }
 
