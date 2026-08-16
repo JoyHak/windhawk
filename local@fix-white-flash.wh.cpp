@@ -75,6 +75,14 @@ Fixes white flashes when opening new windows.
         Aggressively search for white regions and fill them in with the chosen color.
         May affect the appearance and rendering of windows! 
         Fixes white flickering while changing the window size.
+
+    - longerPaint: true
+      $name: Longer Painting
+      $description: >-
+        Paint the white regions for a longer period. 
+        Window elements will appear more slowly. 
+        Guaranteed to paint all windows and child elements.
+
   $name: Settings per Process
   $description: >-
     You can set individual parameters for each process. 
@@ -83,38 +91,23 @@ Fixes white flashes when opening new windows.
 // ==/WindhawkModSettings==
 
 
+#include <windhawk_utils.h>
 #include <mutex>
 #include <unordered_map>
-#include <windhawk_utils.h>
+#include <string>
 
-#define DCX_USESTYLE      0x00010000L
+#define DCX_USESTYLE  0x00010000L
+#define DEFAULT_COLOR 0x191919
 
+using std::wstring;
+using lock_t = std::lock_guard<std::mutex>;
+using DefProcCallback = WNDPROC;
 
-// Settings
-struct StringSetting {
-    PCWSTR value;
-    
-    StringSetting(PCWSTR name, ...) {
-        va_list args;
-        va_start(args, name);
-        value = Wh_GetStringSetting(name, args);
-        va_end(args);
-    }
-
-    ~StringSetting() { 
-        if (value) 
-            Wh_FreeStringSetting(value); 
-    }
-
-    operator PCWSTR() const { 
-        return value; 
-    }
-};
 
 struct ProcessData {
     DWORD processId = 0;
     DWORD threadId  = 0;
-    PCWSTR name;
+    wstring name;
 };
 
 struct ProcessSettings {
@@ -128,27 +121,27 @@ struct {
     HBRUSH brush;
     bool aggressivePaint;
     bool longerPaint;
-    std::unordered_map<PCWSTR, ProcessSettings> processes;
+    std::unordered_map<wstring, ProcessSettings> processes;
 } g_cfg;
+
+
 std::mutex g_cfgMutex;
+std::mutex g_filledMutex;
+std::unordered_map<HWND, bool> g_filledWindows;         // prevents painting after full rendering
+
+std::mutex g_ownersMutex;
+std::unordered_map<HWND, ProcessData> g_windowsOwners;  // holds cache for windows
+
 
 decltype(&DefWindowProcA) DefWindowProcA_Original = nullptr;
 decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
 decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
-using DefProcCallback = LRESULT (WINAPI *)(HWND, UINT, WPARAM, LPARAM);
-
-std::mutex g_filledMutex;
-std::unordered_map<HWND, bool> g_filledWindows;      // prevents painting after full rendering
-
-std::mutex g_ownersMutex;
-std::unordered_map<HWND, ProcessData> g_windowsOwners;   // holds cache for windows
-
 
 // Helpers
 bool ShouldSkip(HWND hWnd, bool aggressivePaint) {
-    std::lock_guard<std::mutex> lock(g_filledMutex);
+    lock_t lock(g_filledMutex);
     if (g_filledWindows.contains(hWnd))
         return true;
 
@@ -175,11 +168,32 @@ bool ShouldSkip(HWND hWnd, bool aggressivePaint) {
 void MarkToSkip(HWND hWnd) {
     // Mark this window as "rendered": 
     // painting is no longer required
+    if (g_filledWindows.contains(hWnd))
+        return;
+
     HWND hRoot = GetAncestor(hWnd, GA_ROOT);
     
-    std::lock_guard<std::mutex> lock(g_filledMutex);
+    lock_t lock(g_filledMutex);
     g_filledWindows[hRoot] = true;
     g_filledWindows[hWnd]  = true;    
+}
+
+void RemoveMarkSkip(HWND hWnd) {
+    {
+        lock_t lock(g_filledMutex);
+        auto it = g_filledWindows.find(hWnd);
+        if (it != g_filledWindows.end()) {
+            g_filledWindows.erase(it);
+        }
+    }
+    {
+        HWND hRoot = GetAncestor(hWnd, GA_ROOT);
+        lock_t lock(g_filledMutex);
+        auto it = g_filledWindows.find(hRoot);
+        if (it != g_filledWindows.end()) {
+            g_filledWindows.erase(it);
+        }
+    }
 }
 
 int Clamp(int value, int low, int high) {
@@ -193,17 +207,17 @@ int Clamp(int value, int low, int high) {
 
 COLORREF ToColor(int rgb) {
     int r = (rgb >> 16) & 0xFF;
-    int g = (rgb >> 8) & 0xFF;
+    int g = (rgb >> 8)  & 0xFF;
     int b = rgb & 0xFF;
 
     return RGB(r, g, b);
 }
 
-PCWSTR GetProcessName(HWND hWnd) {
+wstring GetProcessName(HWND hWnd) {
     DWORD ownerPid = 0;
     const DWORD ownerTid = GetWindowThreadProcessId(hWnd, &ownerPid);
     {
-        std::lock_guard<std::mutex> lock(g_ownersMutex);
+        lock_t lock(g_ownersMutex);
         auto it = g_windowsOwners.find(hWnd);
 
         if (it != g_windowsOwners.end()
@@ -225,34 +239,31 @@ PCWSTR GetProcessName(HWND hWnd) {
         return L"";
     }
 
-    PCWSTR procName = L"";
-    WCHAR exePath[MAX_PATH * 4] = { 0 };
-    DWORD exePathLen = _countof(exePath);
+    wstring procName = L"";
+    WCHAR exePath[MAX_PATH] = {0};
+    DWORD exePathLen = MAX_PATH;
 
     if (QueryFullProcessImageNameW(hProc, 0, exePath, &exePathLen)) {
-        WCHAR* base = wcsrchr(exePath, L'\\');
-        if (base) {
-            base++; // points to filename
-            // duplicate so we can modify (strip extension, lowercase)
-            wchar_t* dup = _wcsdup(base);
-            if (dup) {
-                // strip extension
-                wchar_t* dot = wcschr(dup, L'.');
-                if (dot) 
-                    *dot = L'\0';
-
-                for (wchar_t* p = dup; *p; ++p) 
-                    *p = towlower(*p);
-
-                procName = dup; // owned by us
+        WCHAR* name = wcsrchr(exePath, L'\\');
+        if (name) {
+            procName = (name + 1);
+            size_t dotPos = procName.find(L'.');
+            if (dotPos != wstring::npos) {
+                procName = procName.substr(0, dotPos);
             }
+            std::transform(
+                procName.begin(), 
+                procName.end(), 
+                procName.begin(), 
+                ::towlower
+            );
         }
     }
 
     CloseHandle(hProc);
 
-    if (procName) {
-        std::lock_guard<std::mutex> lock(g_ownersMutex);
+    if (!procName.empty()) {
+        lock_t lock(g_ownersMutex);
         g_windowsOwners[hWnd] = ProcessData { ownerPid, ownerTid, procName };
         // return pointer stored in the map to ensure stable lifetime
         return g_windowsOwners[hWnd].name;
@@ -262,8 +273,8 @@ PCWSTR GetProcessName(HWND hWnd) {
 }
 
 ProcessSettings GetProcessSettings(HWND hWnd) {
-    PCWSTR name = GetProcessName(hWnd);
-    if (name) {
+    wstring name = GetProcessName(hWnd);
+    if (!name.empty()) {
         auto it = g_cfg.processes.find(name);
         if (it != g_cfg.processes.end())
             return it->second;
@@ -347,37 +358,16 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
 
         return TRUE; // background erased - don't let the original erase it again
     } 
-    case WM_ACTIVATEAPP: 
-    case WM_INITDIALOG:
-    case WM_ENTERSIZEMOVE:
-    {
-        // Top-level window is rendered, don't paint again
-        LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-        if ((style & WS_CHILD) 
-        || !(style & WS_CAPTION) 
-        || !(style & WS_THICKFRAME)) {
-            MarkToSkip(hWnd);
-        }
-
+    case WM_SETCURSOR:
+    case WM_ENTERSIZEMOVE: {
+        // Window is rendered, don't paint again
+        MarkToSkip(hWnd);
+        
         break;
     }
     case WM_NCDESTROY: {
-        // Window is destroyed, forget the flag
-        {
-            std::lock_guard<std::mutex> lock(g_filledMutex);
-            auto it = g_filledWindows.find(hWnd);
-            if (it != g_filledWindows.end()) {
-                g_filledWindows.erase(it);
-            }
-        }
-        {
-            HWND hRoot = GetAncestor(hWnd, GA_ROOT);
-            std::lock_guard<std::mutex> lock(g_filledMutex);
-            auto it = g_filledWindows.find(hRoot);
-            if (it != g_filledWindows.end()) {
-                g_filledWindows.erase(it);
-            }
-        }
+        // Window is destroyed, allow painting later
+        RemoveMarkSkip(hWnd);
         break;
     }
     } // switch
@@ -386,18 +376,21 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
 }
 
 
-// Initial stage
-int ParseColorSetting(PCWSTR value) {
-    int color = 0x191919;
-    if (!value) 
-        return color;
+template <typename... Args>
+int ParseColorSetting(PCWSTR valueName, Args... args) {
+    PCWSTR value = Wh_GetStringSetting(valueName, args...);
+    if (!value) {
+        Wh_FreeStringSetting(value);
+        return DEFAULT_COLOR;
+    }
 
     const wchar_t* p = value;
     while (*p && iswspace(*p)) 
         ++p;
 
     if (!*p) {
-        return color;
+        Wh_FreeStringSetting(value);
+        return DEFAULT_COLOR;
     }
 
     if (wcsncmp(p, L"rgb", 3) == 0) {
@@ -409,12 +402,15 @@ int ParseColorSetting(PCWSTR value) {
     }
 
     int r = -1, g = -1, b = -1;
+    int color = DEFAULT_COLOR;
 
     if (swscanf_s(p, L"%d%*[, ]%d%*[, ]%d", &r, &g, &b) == 3) {
         r = Clamp(r, 0, 255);
         g = Clamp(g, 0, 255);
         b = Clamp(b, 0, 255);
         color = (r << 16) | (g << 8) | b;
+
+        Wh_FreeStringSetting(value);
         return color;
     }
 
@@ -437,38 +433,68 @@ int ParseColorSetting(PCWSTR value) {
         parsed &= 0xFFFFFFUL;
 
     color = (int)parsed;
+
+    Wh_FreeStringSetting(value);
     return color;
 }
 
+wstring Trim(const wstring& str) {
+    size_t start = 0;
+    while (start < str.size() && iswspace(str[start])) {
+        start++;
+    }
+    size_t end = str.size();
+    while (end > start && iswspace(str[end - 1])) {
+        end--;
+    }
+    return str.substr(start, end - start);
+}
+
+template <typename... Args>
+inline wstring GetStringSetting(PCWSTR valueName, Args... args) {
+    return Trim( 
+        wstring(
+            WindhawkUtils::StringSetting::make(valueName, args...)
+            .get()
+        )
+    );
+}
+
+HBRUSH TryCreateBrush(int rgb) {
+    HBRUSH brush = CreateSolidBrush(ToColor(rgb));
+    if (!brush) {
+        Wh_Log(L"Failed to create %#x brush!", rgb);
+        brush = CreateSolidBrush(ToColor(DEFAULT_COLOR));
+    }
+
+    if (!brush) {
+        Wh_Log(L"Failed to create default brush!");
+        return NULL;
+    }
+
+    return brush;
+}
+
 BOOL LoadSettings() {
-    std::lock_guard<std::mutex> lock(g_cfgMutex);
+    lock_t lock(g_cfgMutex);
     {
-        g_cfg.aggressivePaint = Wh_GetIntSetting(L"aggressivePaint");
-        g_cfg.longerPaint     = Wh_GetIntSetting(L"longerPaint");
+        g_cfg.aggressivePaint = Wh_GetIntSetting(L"GlobalSettings.aggressivePaint");
+        g_cfg.longerPaint     = Wh_GetIntSetting(L"GlobalSettings.longerPaint");
 
-        StringSetting sBackColor(L"GlobalSettings.backgroundColor");
-        int iBackColor = ParseColorSetting(sBackColor);
-
-        HBRUSH brush = CreateSolidBrush(
-            ToColor(iBackColor)
-        );
+        int    backColor = ParseColorSetting(L"GlobalSettings.backgroundColor");
+        HBRUSH brush     = TryCreateBrush(backColor);
 
         if (!brush) {
-            Wh_Log(L"Failed to create brush for %s!", sBackColor.value);
-            brush = CreateSolidBrush(0x00191919);
-        }
-
-        if (!brush) {
-            Wh_Log(L"Failed to create default brush!");
             return FALSE;
         }
+
         g_cfg.brush = brush;
     }
 
     g_cfg.processes.clear();
     for (int i = 0;; i++) {
-        StringSetting name(L"ProcessesSettings[%d].name", i);
-        if (!*name) {
+        auto name = GetStringSetting(L"ProcessesSettings[%d].name", i);
+        if (name.empty()) {
             break;
         }
 
@@ -477,31 +503,16 @@ BOOL LoadSettings() {
         g_cfg.processes[name].longerPaint =
             Wh_GetIntSetting(L"ProcessesSettings[%d].longerPaint", i);
             
-        StringSetting sBackColor(L"ProcessesSettings[%d].backgroundColor", i);
-        int iBackColor = ParseColorSetting(sBackColor);
+        int backColor = ParseColorSetting(L"ProcessesSettings[%d].backgroundColor", i);
+        HBRUSH brush  = TryCreateBrush(backColor);
 
-        HBRUSH brush = CreateSolidBrush(
-            ToColor(iBackColor)
-        );
-
-        if (!brush) {
-            Wh_Log(L"Failed to create %s brush for %s!", sBackColor.value, name.value);
-            brush = CreateSolidBrush(0x00191919);
-        }
-
-        if (!brush) {
-            Wh_Log(L"Failed to create default brush for %s!", name.value);
-            continue;
-        }
-
-        g_cfg.processes[name].brush = brush;
+        if (brush)
+            g_cfg.processes[name].brush = brush;
     }
 
     Wh_Log(L"Settings loaded");
-    return TRUE;
+    return FALSE;
 }
-
-
 
 // Hook rendering procedures
 LRESULT WINAPI DefWindowProcA_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
@@ -553,7 +564,7 @@ BOOL Wh_ModSettingsChanged(BOOL*) {
 
 void Wh_ModUninit() {
     {
-        std::lock_guard<std::mutex> lock(g_filledMutex);
+        lock_t lock(g_filledMutex);
         for (auto& win : g_filledWindows) {
             if (IsWindow(win.first)) {
                 RedrawWindow(
@@ -565,11 +576,11 @@ void Wh_ModUninit() {
         g_filledWindows.clear();
     }
     {
-        std::lock_guard<std::mutex> lock(g_ownersMutex);
+        lock_t lock(g_ownersMutex);
         g_windowsOwners.clear();
     }
     {
-        std::lock_guard<std::mutex> lock(g_cfgMutex);
+        lock_t lock(g_cfgMutex);
         if (g_cfg.brush)
             DeleteObject(g_cfg.brush);
 
