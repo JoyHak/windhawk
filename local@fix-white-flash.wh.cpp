@@ -48,7 +48,7 @@ Fixes white flashes when opening new windows.
 
 // ==WindhawkModSettings==
 /*
-- GlobalSettings:
+- Global:
     - backgroundColor: "0x191919"
       $name: Background Color
       $description: Enter HEX (#RRGGBB or 0xRRGGBB) or RGB (25,25,25)
@@ -77,7 +77,7 @@ Fixes white flashes when opening new windows.
   $name: Global Settings
   $description: These settings affect all processes and their windows.
   
-- ProcessesSettings:
+- Process:
   - - name: ""
       $name: Process Name
       $description: base name + .exe (explorer.exe, notepad++.exe)
@@ -157,19 +157,22 @@ COLORREF ToColor(int rgb) {
  */
 wstring Trim(const wstring& s) {
     // trims spaces, tabs and newlines
+    if (s.empty())
+        return {};
+
     size_t start = 0;
     while (start < s.size() 
         && (s[start] == L' ' 
-        || s[start] == L'\t' 
-        || s[start] == L'\n')) {
+         || s[start] == L'\t' 
+         || s[start] == L'\n')) {
         ++start;
     }
 
     size_t end = s.size();
     while (end > start 
     && (s[end - 1] == L' ' 
-        || s[end - 1] == L'\t' 
-        || s[end - 1] == L'\n')) {
+     || s[end - 1] == L'\t' 
+     || s[end - 1] == L'\n')) {
         --end;
     }
 
@@ -225,10 +228,6 @@ wstring GetProcessName(HWND hWnd) {
         WCHAR* name = wcsrchr(exePath, L'\\');
         if (name) {
             procName = (name + 1);
-            size_t dotPos = procName.find(L'.');
-            if (dotPos != wstring::npos) {
-                procName = procName.substr(0, dotPos);
-            }
             std::transform(
                 procName.begin(), 
                 procName.end(), 
@@ -367,41 +366,48 @@ class Cfg {
         Unload(); // safe cleanup
         lock_t lock(s_mutex);
 
-        s_global.aggressivePaint = Wh_GetIntSetting(L"GlobalSettings.aggressivePaint");
-        s_global.longerPaint     = Wh_GetIntSetting(L"GlobalSettings.longerPaint");
+        s_global.aggressivePaint = Wh_GetIntSetting(L"Global.aggressivePaint");
+        s_global.longerPaint     = Wh_GetIntSetting(L"Global.longerPaint");
         {
-            int    backColor = ParseColor(L"GlobalSettings.backgroundColor");
+            int    backColor = ParseColor(L"Global.backgroundColor");
             HBRUSH brush     = TryCreateBrush(backColor);
 
             if (!brush)
                 return false;
 
             s_global.brush = brush;
-            Wh_Log(L"Color: %#x, Brush: %#x", backColor, s_global.brush);
+            // Wh_Log(L"Global color: %#x", backColor);
         }
 
         for (int i = 0;; ++i) {
-            auto name = GetString(L"ProcessesSettings[%d].name", i);
-            Wh_Log(L"'%s'", name.c_str());
+            auto name = GetString(L"Process[%d].name", i);
             if (name.empty()) 
                 break;
 
-            s_processes[name].aggressivePaint = 
-                Wh_GetIntSetting(L"ProcessesSettings[%d].aggressivePaint", i);
-            s_processes[name].longerPaint = 
-                Wh_GetIntSetting(L"ProcessesSettings[%d].longerPaint", i);
+            // Process name should be in lower case
+            std::transform(
+                name.begin(), 
+                name.end(), 
+                name.begin(), 
+                ::towlower
+            );
 
-            int    backColor = ParseColor(L"ProcessesSettings[%d].backgroundColor");
+            s_processes[name].aggressivePaint = 
+                Wh_GetIntSetting(L"Process[%d].aggressivePaint", i);
+            s_processes[name].longerPaint = 
+                Wh_GetIntSetting(L"Process[%d].longerPaint", i);
+
+            int    backColor = ParseColor(L"Process[%d].backgroundColor");
             HBRUSH brush     = TryCreateBrush(backColor);
 
             if (brush)
                 s_processes[name].brush = brush;
 
-            Wh_Log(L"'%s' a=%d l=%d", name.c_str(), s_processes[name].aggressivePaint, s_processes[name].longerPaint);
-            Wh_Log(L"Color: %#x, Brush: %#x", backColor, s_processes[name].brush);
-        }
+            // Wh_Log(L"'%s' Color: %#x", name.c_str(), backColor);
+        }  
 
-        Wh_Log(L"Settings loaded");
+        // Wh_Log(L"Settings loaded");
+        // Log(s_global);
         return false;
     }
 
@@ -424,8 +430,11 @@ class Cfg {
         s_processes.clear();
     }
 
+    static Values Get() { return s_global; }
+
     /**
-    * @brief Syntax sugar to get correct values.
+    * @brief Returns values for specific process 
+    * or default (global) values.
     */
     static Values Get(HWND hWnd) {
         wstring name = GetProcessName(hWnd);
@@ -444,16 +453,17 @@ private:
     * Trims leading and trailing spaces.
     */
     template <typename... Args>
-    static wstring GetString(PCWSTR valueName, Args... args) {
-        PCWSTR p = WindhawkUtils::StringSetting::make(valueName, args...).get();
-        if (!p || !*p) 
-            return {};
-
-        return Trim(wstring(p));
+    inline static wstring GetString(PCWSTR valueName, Args... args) {
+        return Trim(
+            wstring(
+                WindhawkUtils::StringSetting::make(valueName, args...)
+                .get()
+            )
+        );
     }
 
     /**
-    * @brief Parses color from user: RGB(0,0,0); 0x0; #0
+    * @brief Parses color from user: #RRGGBB, 0xRRGGBB, RGB (25,25,25)
     * @returns Integer that represents RGB (not COLORREF!).
     */
     template <typename... Args>
@@ -482,13 +492,12 @@ private:
         }
 
         int r = -1, g = -1, b = -1;
-        int color = DEFAULT_COLOR;
 
         if (swscanf_s(p, L"%d%*[, ]%d%*[, ]%d", &r, &g, &b) == 3) {
             r = Clamp(r, 0, 255);
             g = Clamp(g, 0, 255);
             b = Clamp(b, 0, 255);
-            color = (r << 16) | (g << 8) | b;
+            int color = (r << 16) | (g << 8) | b;
 
             Wh_FreeStringSetting(value);
             return color;
@@ -501,7 +510,8 @@ private:
         for (const wchar_t* t = p; *t; ++t) {
             if (iswspace(*t)) 
                 break;
-            if ((*t >= L'A' && *t <= L'F') || (*t >= L'a' && *t <= L'f')) {
+            if ((*t >= L'A' && *t <= L'F') 
+             || (*t >= L'a' && *t <= L'f')) {
                 hasHexAlpha = true;
                 break;
             }
@@ -512,7 +522,7 @@ private:
         if (parsed > 0xFFFFFFUL) 
             parsed &= 0xFFFFFFUL;
 
-        color = (int)parsed;
+        int color = (int)parsed;
 
         Wh_FreeStringSetting(value);
         return color;
@@ -652,7 +662,7 @@ LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lPara
 
 BOOL Wh_ModInit() {
     if (!Cfg::Load()) {
-        Wh_Log(L"Failed to load settings!");
+        // Wh_Log(L"Failed load settings!");
         return FALSE;
     }
 
@@ -677,10 +687,13 @@ BOOL Wh_ModSettingsChanged(BOOL*) {
         return FALSE;
     }
 
+    Wh_Log(L">");
     return TRUE;
 }
 
 void Wh_ModUninit() {
+    Wh_Log(L">");
+
     Cfg::Unload();
     SkipWin::Clear();
     {
