@@ -186,12 +186,6 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
         std::forward<Args>(args)...
     );
 
-    // Remove type before open brace
-    size_t pos = narrow.find('{');
-    if (pos != std::string::npos) {
-        narrow = narrow.substr(pos);
-    }
-
     // convert narrow to wide
     int wideLen = MultiByteToWideChar(
         codePage, 0, 
@@ -216,7 +210,7 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
     out += wide;
 }
 
-
+namespace dbg {
 /**
 * @brief Dumps `obj` contents into the string.
 * Dumps public and private fields, their type, name and value.
@@ -237,16 +231,51 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
 *     Any class, struct or primitive.
 */
 template<typename T>
-void dump_struct(wstring& out, const T& obj) {
+void Dump(wstring& out, const T& obj) {
     if constexpr (std::is_same_v<std::remove_cv_t<T>, wstring>) {
         out += L"\"" + obj + L"\"";
-    } else if constexpr (std::is_class_v<T> || std::is_union_v<T>) {
+        return;
+    } 
+    
+    wstring tmp;
+    size_t start, end;
+
+    if constexpr (std::is_class_v<T> || std::is_union_v<T>) {
         // pass its address directly
-        __builtin_dump_struct(&obj, &ToWide, out, CP_ACP);
+        __builtin_dump_struct(&obj, &ToWide, tmp, CP_ACP);
+
+        // Trim class/struct type
+        start = tmp.find(L"{");
+        end   = tmp.rfind(L"}");
+
+        if (end != wstring::npos)
+            end += 1;
     } else {
-        struct Value { T value; } v = { .value = obj };
-        __builtin_dump_struct(&v, &ToWide, out, CP_ACP);
+        struct { T value; } v = { .value = obj };
+        __builtin_dump_struct(&v, &ToWide, tmp, CP_ACP);
+        
+        // Trim struct wrapper
+        start = tmp.find(L"value = ");
+        end   = tmp.rfind(L"}");
+
+        if (start != wstring::npos)
+            start += 8;
+        if (end != wstring::npos)
+            end -= 1;
     }
+
+    if (start == wstring::npos && end == wstring::npos) {
+        out += tmp;
+        return;
+    }
+
+    if (start == wstring::npos)
+        start = 0;
+    
+    if (end == wstring::npos)
+        out += tmp.substr(start);
+    else
+        out += tmp.substr(start, end - start);
 }
 
 template<typename Key, typename Value, typename... Args>
@@ -255,19 +284,20 @@ void _Log(const unordered_map<Key, Value, Args...>& map_, wstring name = L"") {
     out.reserve(name.size() + map_.size() * 256); // heuristic reserve to reduce reallocations
 
     if (!name.empty()) {
-        out += name + L": ";
+        out += name + L" = ";
     }
 
     for (const auto& kv : map_) {
         Key key = kv.first;
         Value value = kv.second;
         
-        dump_struct(out, key);
-        out += L" = ";
-        dump_struct(out, value);
+        Dump(out, key);
+        out += L" -> ";
+        Dump(out, value);
+        out += L"; ";
     }
 
-    Wh_Log(L"M{ %s }", out.c_str());
+    Wh_Log(L"%s", out.c_str());
 }
 
 /**
@@ -279,19 +309,22 @@ void _Log(const T& obj, wstring name = L"") {
     wstring out;
 
     if (!name.empty()) {
-        out += name + L": ";
+        out += name + L" = ";
     }
 
-    dump_struct(out, obj);
-    Wh_Log(L"%s", out.c_str());
+    Dump(out, obj);
+    Wh_Log(L"%s;", out.c_str());
 }
+} // dbg
 
-#define Log(obj)                                \
-    do {                                        \
-        wstring _name;                          \
-        ToWide(_name, CP_ACP, "%s", #obj);      \
-        _Log((obj), _name);                     \
-    } while (0)                                 \
+#define Log(obj)                                            \
+    do {                                                    \
+        if (InternalWh_IsLogEnabled(InternalWhModPtr)) {    \
+            wstring _name;                                  \
+            ToWide(_name, CP_ACP, "%s", #obj);              \
+            dbg::_Log((obj), _name);                        \
+        }                                                   \
+    } while (0)                                             \
 
 // == Helpers ==
 
@@ -310,34 +343,6 @@ COLORREF ToColor(int rgb) {
     int b = rgb & 0xFF;
 
     return RGB(r, g, b);
-}
-
-/**
- * @brief Trims spaces, tabs and newlines. 
- * Neccessary function to avoid accidental spaces around process name.
- */
-wstring Trim(const wstring& s) {
-    // trims spaces, tabs and newlines
-    if (s.empty())
-        return {};
-
-    size_t start = 0;
-    while (start < s.size() 
-        && (s[start] == L' ' 
-         || s[start] == L'\t' 
-         || s[start] == L'\n')) {
-        ++start;
-    }
-
-    size_t end = s.size();
-    while (end > start 
-    && (s[end - 1] == L' ' 
-     || s[end - 1] == L'\t' 
-     || s[end - 1] == L'\n')) {
-        --end;
-    }
-
-    return s.substr(start, end - start);
 }
 
 // == Cache ==
@@ -541,17 +546,9 @@ class Cfg {
         }
 
         for (int i = 0;; ++i) {
-            auto name = GetString(L"Process[%d].name", i);
+            auto name = Cfg::GetProcessName(L"Process[%d].name", i);
             if (name.empty()) 
                 break;
-
-            // Process name should be in lower case
-            std::transform(
-                name.begin(), 
-                name.end(), 
-                name.begin(), 
-                ::towlower
-            );
 
             s_processes[name].aggressivePaint = 
                 Wh_GetIntSetting(L"Process[%d].aggressivePaint", i);
@@ -570,9 +567,11 @@ class Cfg {
         }  
 
         // Wh_Log(L"Settings loaded");
-        auto cls = WindhawkUtils::StringSetting::make(L"Global.aggressivePaint");
-        Log(cls);
-        Log(s_global);
+        // auto cls = WindhawkUtils::StringSetting::make(L"Global.aggressivePaint");
+        // Log(cls);
+        // Log(s_global);
+        int param = 122;
+        Log(param);
         Log(s_processes);
         return false;
     }
@@ -603,7 +602,7 @@ class Cfg {
     * or default (global) values.
     */
     static Values Get(HWND hWnd) {
-        wstring name = GetProcessName(hWnd);
+        wstring name = ::GetProcessName(hWnd);
         if (!name.empty()) {
             auto it = s_processes.find(name);
             if (it != s_processes.end())
@@ -615,17 +614,36 @@ class Cfg {
 
 private:
     /**
-    * @brief RAII wrapper for a string setting. 
-    * Trims leading and trailing spaces.
+    * @brief Safe wrapper around string setting.
     */
     template <typename... Args>
     inline static wstring GetString(PCWSTR valueName, Args... args) {
-        return Trim(
-            wstring(
-                WindhawkUtils::StringSetting::make(valueName, args...)
-                .get()
-            )
+        return wstring(
+            WindhawkUtils::StringSetting::make(valueName, args...)
+            .get()
         );
+    }
+
+    /**
+    * @brief Returns trimmed process name in lower case.
+    */
+    template <typename... Args>
+    static wstring GetProcessName(PCWSTR valueName, Args... args) {
+        PCWSTR value = Wh_GetStringSetting(valueName, args...);
+        if (!value) {
+            Wh_FreeStringSetting(value);
+            return {};
+        }
+
+        wstring name = wstring(value);
+        name.erase(0, name.find_first_not_of(L" \t\v\r\n"));  // left trim
+        name.erase(name.find_last_not_of(L" \t\v\r\n") + 1);  // right trim
+
+        // Process name should be in lower case
+        std::transform(name.begin(), name.end(), name.begin(), std::towlower);
+
+        Wh_FreeStringSetting(value);
+        return name;
     }
 
     /**
