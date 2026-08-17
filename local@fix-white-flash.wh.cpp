@@ -135,11 +135,30 @@ decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
 // == Helpers ==
 
-#if __has_builtin(__builtin_dump_struct)
 /**
-* @brief Converts narrow string to wide UTF-16.
-* See the reason below in `Log()`.
-*/
+ * @brief Format a narrow (char) printf-style string and append its converted UTF-16
+ * representation to a wide output string using `MultiByteToWideChar` 
+ * with the specified @p codePage.
+ *
+ * The function performs no modifications to @p out if any step fails (null format,
+ * formatting error, or conversion failure).
+ *
+ * @param[out] out
+ *     `std::wstring` to which the converted wide text will be appended.
+ *
+ * @param[in] codePage
+ *     Win32 code page identifier passed to `MultiByteToWideChar` (CP_UTF8, CP_ACP, ...)
+ *     The chosen code page determines how the narrow bytes are interpreted when converting
+ *     to UTF-16.
+ *
+ * @param[in] format
+ *     printf-style format string. Must be non-null.
+ *
+ * @param[in] args
+ *     Arguments corresponding to @p format. They are forwarded to `std::snprintf`.
+ *
+ * @warning it does not perform any locale-aware normalization beyond the specified code page conversion.
+ */
 template<typename... Args>
 void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...args) {
     if (!format)
@@ -206,15 +225,12 @@ void Log(const T& obj) {
     * So we use `to_wchar` closure with `vsnprintf` inside to ensure safety.
     * https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
     */
-    
+
     wstring out;
     __builtin_dump_struct(&obj, &ToWide, out, CP_ACP);
 
     Wh_Log(L"%s", out.c_str());
 }
-#else 
-    #define Log(...) 
-#endif
 
 int Clamp(int value, int low, int high) {
     if (value < low) 
@@ -486,12 +502,15 @@ class Cfg {
                 s_processes[name].brush = brush;
 
             // Wh_Log(L"'%s' Color: %#x", name.c_str(), backColor);
+            // Log(name);
+            // Log(brush);
         }  
 
         // Wh_Log(L"Settings loaded");
-        auto cls = WindhawkUtils::StringSetting::make(L"Global.aggressivePaint");
-        Log(cls);
-        Log(s_global);
+        // auto cls = WindhawkUtils::StringSetting::make(L"Global.aggressivePaint");
+        // Log(cls);
+        // Log(s_global);
+        // Log(s_processes);
         return false;
     }
 
