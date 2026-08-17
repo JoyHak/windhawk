@@ -134,12 +134,13 @@ decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
 decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
-// == Helpers ==
+// == Debug Logging ==
 
 /**
  * @brief Format a narrow (char) printf-style string and append its converted UTF-16
  * representation to a wide output string using `MultiByteToWideChar` 
  * with the specified @p codePage.
+ * @see dump_struct
  *
  * The function performs no modifications to @p out if any step fails (null format,
  * formatting error, or conversion failure).
@@ -185,6 +186,12 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
         std::forward<Args>(args)...
     );
 
+    // Remove type before open brace
+    size_t pos = narrow.find('{');
+    if (pos != std::string::npos) {
+        narrow = narrow.substr(pos);
+    }
+
     // convert narrow to wide
     int wideLen = MultiByteToWideChar(
         codePage, 0, 
@@ -209,35 +216,84 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
     out += wide;
 }
 
+
 /**
-* @brief Outputs structures and classes contents.
-* Displays public and private fields, their names and values.
+* @brief Dumps `obj` contents into the string.
+* Dumps public and private fields, their type, name and value.
+*
+* @remark `__builtin_dump_struct` intrinsic returns narrow string (ANSI or UTF-8). 
+* `Wh_Log` (macro around `InternalWh_Log_Wrapper`) expects wide string (PCWSTR - wide UTF-16).
+* We must convert the narrow bytes to UTF-16 using `MultiByteToWideChar` 
+* before passing to the `Wh_Log`.
+*
+* If we try to build a single char buffer by passing `sprintf` into intrinsic, 
+* we must track the current write offset and guard against overflows. 
+* So we use `ToWide` function with `vsnprintf` inside to ensure safety.
+* https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
+*
+* @param[out] out
+*     `std::wstring` to which the @p obj contents will be appended.
+* @param[in] obj
+*     Any class, struct or primitive.
 */
 template<typename T>
-void Log(const T& obj) {
-    /**
-    * `__builtin_dump_struct` intrinsic returns narrow string (ANSI or UTF-8). 
-    * `Wh_Log` (macro around `InternalWh_Log_Wrapper`) expects wide string (PCWSTR - wide UTF-16).
-    * We must convert the narrow bytes to UTF-16 using `MultiByteToWideChar` 
-    * before passing to the `Wh_Log`.
-    *
-    * If we try to build a single char buffer by passing `sprintf` into intrinsic, 
-    * we must track the current write offset and guard against overflows. 
-    * So we use `to_wchar` closure with `vsnprintf` inside to ensure safety.
-    * https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
-    */
-
-    wstring out;
-    if constexpr (std::is_class_v<T> || std::is_union_v<T>) {
+void dump_struct(wstring& out, const T& obj) {
+    if constexpr (std::is_same_v<std::remove_cv_t<T>, wstring>) {
+        out += L"\"" + obj + L"\"";
+    } else if constexpr (std::is_class_v<T> || std::is_union_v<T>) {
         // pass its address directly
         __builtin_dump_struct(&obj, &ToWide, out, CP_ACP);
     } else {
         struct Value { T value; } v = { .value = obj };
         __builtin_dump_struct(&v, &ToWide, out, CP_ACP);
     }
+}
 
+template<typename Key, typename Value, typename... Args>
+void _Log(const unordered_map<Key, Value, Args...>& map_, wstring name = L"") {
+    wstring out;
+    out.reserve(name.size() + map_.size() * 256); // heuristic reserve to reduce reallocations
+
+    if (!name.empty()) {
+        out += name + L": ";
+    }
+
+    for (const auto& kv : map_) {
+        Key key = kv.first;
+        Value value = kv.second;
+        
+        dump_struct(out, key);
+        out += L" = ";
+        dump_struct(out, value);
+    }
+
+    Wh_Log(L"M{ %s }", out.c_str());
+}
+
+/**
+* @brief Outputs structures and classes contents.
+* Displays public and private fields, their names and values.
+*/
+template<typename T>
+void _Log(const T& obj, wstring name = L"") {
+    wstring out;
+
+    if (!name.empty()) {
+        out += name + L": ";
+    }
+
+    dump_struct(out, obj);
     Wh_Log(L"%s", out.c_str());
 }
+
+#define Log(obj)                                \
+    do {                                        \
+        wstring _name;                          \
+        ToWide(_name, CP_ACP, "%s", #obj);      \
+        _Log((obj), _name);                     \
+    } while (0)                                 \
+
+// == Helpers ==
 
 int Clamp(int value, int low, int high) {
     if (value < low) 
@@ -509,15 +565,15 @@ class Cfg {
                 s_processes[name].brush = brush;
 
             // Wh_Log(L"'%s' Color: %#x", name.c_str(), backColor);
-            Log(name);
-            Log(brush);
+            // Log(name);
+            // Log(brush);
         }  
 
         // Wh_Log(L"Settings loaded");
-        // auto cls = WindhawkUtils::StringSetting::make(L"Global.aggressivePaint");
-        // Log(cls);
-        // Log(s_global);
-        // Log(s_processes);
+        auto cls = WindhawkUtils::StringSetting::make(L"Global.aggressivePaint");
+        Log(cls);
+        Log(s_global);
+        Log(s_processes);
         return false;
     }
 
