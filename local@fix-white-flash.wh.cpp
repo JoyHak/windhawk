@@ -119,6 +119,7 @@ Fixes white flashes when opening new windows.
 #include <mutex>
 #include <unordered_map>
 #include <string>
+#include <type_traits>
 
 #define DCX_USESTYLE  0x00010000L
 #define DEFAULT_COLOR 0x191919
@@ -227,7 +228,13 @@ void Log(const T& obj) {
     */
 
     wstring out;
-    __builtin_dump_struct(&obj, &ToWide, out, CP_ACP);
+    if constexpr (std::is_class_v<T> || std::is_union_v<T>) {
+        // pass its address directly
+        __builtin_dump_struct(&obj, &ToWide, out, CP_ACP);
+    } else {
+        struct Value { T value; } v = { .value = obj };
+        __builtin_dump_struct(&v, &ToWide, out, CP_ACP);
+    }
 
     Wh_Log(L"%s", out.c_str());
 }
@@ -502,8 +509,8 @@ class Cfg {
                 s_processes[name].brush = brush;
 
             // Wh_Log(L"'%s' Color: %#x", name.c_str(), backColor);
-            // Log(name);
-            // Log(brush);
+            Log(name);
+            Log(brush);
         }  
 
         // Wh_Log(L"Settings loaded");
