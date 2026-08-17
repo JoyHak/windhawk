@@ -124,6 +124,7 @@ Fixes white flashes when opening new windows.
 #define DEFAULT_COLOR 0x191919
 
 using std::wstring;
+using std::unordered_map;
 using lock_t = std::lock_guard<std::mutex>;
 using DefProcCallback = WNDPROC;
 
@@ -269,7 +270,7 @@ struct ProcessData {
 };
 
 std::mutex g_cacheMutex;
-std::unordered_map<HWND, ProcessData> g_cachedWindows;
+unordered_map<HWND, ProcessData> g_cachedWindows;
 
 /**
 * @brief Queries name of the process by window handle
@@ -417,7 +418,7 @@ class SkipWin {
     // inline = declaration also a definition
     // https://stackoverflow.com/a/46874207
     inline static std::mutex s_mutex;
-    inline static std::unordered_map<HWND, bool> s_windows;
+    inline static unordered_map<HWND, bool> s_windows;
 };
 
 /**
@@ -631,7 +632,7 @@ private:
     // https://stackoverflow.com/a/46874207
     inline static std::mutex s_mutex;
     inline static Values s_global{};
-    inline static std::unordered_map<wstring, Values> s_processes;
+    inline static unordered_map<wstring, Values> s_processes;
 };
 
 // == Main ==
