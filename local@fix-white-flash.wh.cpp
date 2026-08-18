@@ -124,9 +124,9 @@ Fixes white flashes when opening new windows.
 
 #include <windhawk_utils.h>
 #include <mutex>
-#include <unordered_map>
 #include <string>
-#include <concepts>
+#include <unordered_map>
+#include <concepts>     // for logging overloads
 
 #define DCX_USESTYLE  0x00010000L
 #define DEFAULT_COLOR 0x191919
@@ -135,11 +135,6 @@ using std::wstring;
 using std::unordered_map;
 using lock_t = std::lock_guard<std::mutex>;
 using DefProcCallback = WNDPROC;
-
-decltype(&DefWindowProcA) DefWindowProcA_Original = nullptr;
-decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
-decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
-decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
 // == Verbose Logging ==
 
@@ -290,14 +285,6 @@ void Dump(wstring& out, const T& obj) {
         out += tmp.substr(start, end - start);
 }
 
-// template<typename T>
-// concept pair = requires (T t) {
-//     typename T::first_type;
-//     typename T::second_type;
-//     { t.first  } -> std::same_as<typename T::first_type  const&>;
-//     { t.second } -> std::same_as<typename T::second_type const&>;
-// };
-
 template<typename T>
 concept pair = requires (T t) {
     typename T::first_type;
@@ -324,7 +311,8 @@ concept container_linear = container<Cont> && (!pair<typename Cont::value_type>)
 
 template<container_pairs Cont>
 void Fmt(wstring& out, Cont& cont) {
-    out.reserve(cont.size() * 256); // heuristic reserve to reduce reallocations
+    out.reserve(out.size() + cont.size() * 256); // heuristic reserve to reduce reallocations
+    out += L"{ ";
 
     for (const auto& kv : cont) {
         Dump(out, kv.first);
@@ -332,16 +320,22 @@ void Fmt(wstring& out, Cont& cont) {
         Dump(out, kv.second);
         out += L"; ";
     }
+
+    out.erase(out.length() - 2);
+    out += L" };";
 }
 
 template<container_linear Cont>
 void Fmt(wstring& out, Cont& cont) {
-    out.reserve(cont.size() * 256); // heuristic reserve to reduce reallocations
+    out.reserve(out.size() + cont.size() * 256); // heuristic reserve to reduce reallocations
+    out += L"[ ";
 
     for (const auto& val : cont) {
         Dump(out, val);
         out += L", ";
     }
+    out.erase(out.length() - 2);
+    out += L" ];";
 }
 
 template<typename T>
@@ -873,6 +867,11 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
 }
 
 // == Hook rendering procedures ==
+
+decltype(&DefWindowProcA) DefWindowProcA_Original = nullptr;
+decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
+decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
+decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
 LRESULT WINAPI DefWindowProcA_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam) {
     return FillWindow(hWnd, Msg, wParam, lParam, DefWindowProcA_Original);
