@@ -60,29 +60,29 @@ Fixes white flashes when opening new windows.
         - "0x3A3A3A": Steel
         - "0x000000": Black
         - "0xFFFFFF": White
-        
+
     - aggressivePaint: true
       $name: Aggressive Painting
       $description: >-
         Aggressively search for white regions and paint them in with the chosen color.
-        May affect the appearance and rendering of windows! 
+        May affect the appearance and rendering of windows!
         Fixes white flickering while changing the window size.
 
     - longerPaint: true
       $name: Longer Painting
       $description: >-
-        Paint the white regions for a longer period. 
-        Window elements will appear more slowly. 
+        Paint the white regions for a longer period.
+        Window elements will appear more slowly.
         Guaranteed to paint all windows and child elements.
 
   $name: Global Settings
   $description: These settings affect all processes and their windows.
-  
+
 - Process:
   - - name: ""
       $name: Process Name
       $description: base name + .exe (explorer.exe, notepad++.exe)
-    
+
     - backgroundColor: "0x191919"
       $name: Background Color
       $description: Enter HEX (#RRGGBB or 0xRRGGBB) or RGB (25,25,25)
@@ -93,31 +93,31 @@ Fixes white flashes when opening new windows.
         - "0x3A3A3A": Steel
         - "0x000000": Black
         - "0xFFFFFF": White
-        
+
     - aggressivePaint: true
       $name: Aggressive Painting
       $description: >-
         Aggressively search for white regions and fill them in with the chosen color.
-        May affect the appearance and rendering of windows! 
+        May affect the appearance and rendering of windows!
         Fixes white flickering while changing the window size.
 
     - longerPaint: true
       $name: Longer Painting
       $description: >-
-        Paint the white regions for a longer period. 
-        Window elements will appear more slowly. 
+        Paint the white regions for a longer period.
+        Window elements will appear more slowly.
         Guaranteed to paint all windows and child elements.
 
   $name: Settings per Process
   $description: >-
-    You can set individual parameters for each process. 
+    You can set individual parameters for each process.
     Click "Add new item" below to add a new process.
 
 - verbose: false
   $name: Verbose Logging
   $description: >-
-    Output additional messages to the "output" tab and 
-    `user-data\logs\......\*-Windhawk Log.log` 
+    Output additional messages to the "output" tab and
+    `user-data\logs\......\*-Windhawk Log.log`
 */
 // ==/WindhawkModSettings==
 
@@ -140,7 +140,7 @@ using DefProcCallback = WNDPROC;
 
 /**
  * @brief Format a narrow (char) printf-style string and append its converted UTF-16
- * representation to a wide output string using `MultiByteToWideChar` 
+ * representation to a wide output string using `MultiByteToWideChar`
  * with the specified @p codePage.
  * @see Dump, MultiByteToWideChar
  *
@@ -170,42 +170,42 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
 
     // determine required size for narrow formatted string
     int narrowLen = std::snprintf(
-        nullptr, 0, 
-        format, 
+        nullptr, 0,
+        format,
         std::forward<Args>(args)...
     );
-    if (narrowLen < 0) 
+    if (narrowLen < 0)
         return;
 
-    // allocate narrow buffer and format into it 
+    // allocate narrow buffer and format into it
     // (include space for terminating NUL)
     std::string narrow{};
     narrow.resize(static_cast<size_t>(narrowLen) + 1);
     std::snprintf(
-        narrow.data(), 
-        narrow.size(), 
-        format, 
+        narrow.data(),
+        narrow.size(),
+        format,
         std::forward<Args>(args)...
     );
 
     // convert narrow to wide
     int wideLen = MultiByteToWideChar(
-        codePage, 0, 
+        codePage, 0,
         narrow.c_str(),
         -1, nullptr, 0
     );
-    if (wideLen <= 0) 
+    if (wideLen <= 0)
         return;
 
-    // wideLen includes terminating NUL; 
+    // wideLen includes terminating NUL;
     // resize to exclude the trailing null when appending
     wstring wide{};
     wide.resize(static_cast<size_t>(wideLen) - 1);
-    
+
     MultiByteToWideChar(
         codePage, 0,
-        narrow.c_str(), 
-        -1, wide.data(), 
+        narrow.c_str(),
+        -1, wide.data(),
         wideLen
     );
 
@@ -214,17 +214,17 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
 
 namespace dbg {
 /**
-* @brief Dumps @p obj contents into the string. 
+* @brief Dumps @p obj contents into the string.
 * Supports primitives, strings and objects.
 * Dumps public and private fields, their type, name and value.
 *
-* @remark `__builtin_dump_struct` intrinsic returns narrow string (ANSI or UTF-8). 
+* @remark `__builtin_dump_struct` intrinsic returns narrow string (ANSI or UTF-8).
 * `Wh_Log` (macro around `InternalWh_Log_Wrapper`) expects wide string (PCWSTR - wide UTF-16).
-* We must convert the narrow bytes to UTF-16 using `MultiByteToWideChar` 
+* We must convert the narrow bytes to UTF-16 using `MultiByteToWideChar`
 * before passing to the `Wh_Log`.
 *
-* If we try to build a single char buffer by passing `sprintf` into intrinsic, 
-* we must track the current write offset and guard against overflows. 
+* If we try to build a single char buffer by passing `sprintf` into intrinsic,
+* we must track the current write offset and guard against overflows.
 * So we use `ToWide` function with `vsnprintf` inside to ensure safety.
 * https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
 *
@@ -238,14 +238,14 @@ void Dump(wstring& out, const T& obj) {
     if constexpr (std::is_same_v<std::remove_cv_t<T>, wstring>) {
         out += L"\"" + obj + L"\"";
         return;
-    } 
+    }
     if constexpr (std::is_same_v<std::remove_cv_t<T>, std::string>) {
         ToWide(out, CP_ACP, "\"%s\"", obj.data());
         return;
-    } 
-    
+    }
+
     wstring tmp{};
-    size_t start, end;
+    size_t start{}, end{};
 
     if constexpr (std::is_class_v<T> || std::is_union_v<T>) {
         // pass its address directly
@@ -260,7 +260,7 @@ void Dump(wstring& out, const T& obj) {
     } else {
         struct { T value; } v = { .value = obj };
         __builtin_dump_struct(&v, &ToWide, tmp, CP_ACP);
-        
+
         // Trim struct wrapper
         start = tmp.find(L"value = ");
         end   = tmp.rfind(L"}");
@@ -278,7 +278,7 @@ void Dump(wstring& out, const T& obj) {
 
     if (start == wstring::npos)
         start = 0;
-    
+
     if (end == wstring::npos)
         out += tmp.substr(start);
     else
@@ -305,7 +305,8 @@ template<typename Cont>
 concept container_pairs = container<Cont> && pair<typename Cont::value_type>;
 
 template<typename Cont>
-concept container_linear = container<Cont> && (!pair<typename Cont::value_type>);
+concept container_linear = container<Cont>;
+// concept container_linear = container<Cont> && (!pair<typename Cont::value_type>);
 
 // Helpers to create readable dump string
 
@@ -351,8 +352,8 @@ bool g_verbose = false;
 #define WIDE(x) L##x
 
 /**
-* @brief Outputs variable name and it's value. 
-* Outputs primitives; strings; objects and structs 
+* @brief Outputs variable name and it's value.
+* Outputs primitives; strings; objects and structs
 * (names and values of their private and public fields)
 */
 #define Log(obj)                                          \
@@ -367,9 +368,9 @@ bool g_verbose = false;
 // == Helpers ==
 
 int Clamp(int value, int low, int high) {
-    if (value < low) 
+    if (value < low)
         return low;
-    if (value > high) 
+    if (value > high)
         return high;
 
     return value;
@@ -411,7 +412,7 @@ wstring GetProcessName(HWND hWnd) {
             return it->second.name;
         }
 
-        if (it != g_cachedWindows.end()) 
+        if (it != g_cachedWindows.end())
             g_cachedWindows.erase(it);
     }
 
@@ -424,7 +425,7 @@ wstring GetProcessName(HWND hWnd) {
         return {};
     }
 
-    wstring procName = {};
+    wstring procName{};
     WCHAR exePath[MAX_PATH] = {0};
     DWORD exePathLen = MAX_PATH;
 
@@ -433,9 +434,9 @@ wstring GetProcessName(HWND hWnd) {
         if (name) {
             procName = (name + 1);
             std::transform(
-                procName.begin(), 
-                procName.end(), 
-                procName.begin(), 
+                procName.begin(),
+                procName.end(),
+                procName.begin(),
                 ::towlower
             );
         }
@@ -456,7 +457,7 @@ wstring GetProcessName(HWND hWnd) {
 // == Data ==
 
 /**
- * @brief Holds marks that window and its root ancestor 
+ * @brief Holds marks that window and its root ancestor
  * are rendered (skip painting).
  * Can be checked via `SkipWin::Skip(hWnd)`
  */
@@ -468,7 +469,7 @@ class SkipWin {
     ~SkipWin() = delete;
 
     static void Mark(HWND hWnd) {
-        if (!hWnd) 
+        if (!hWnd)
             return;
 
         lock_t lock(s_mutex);
@@ -480,40 +481,42 @@ class SkipWin {
     }
 
     static void Unmark(HWND hWnd) {
-        if (!hWnd) 
+        if (!hWnd)
             return;
 
         lock_t lock(s_mutex);
         s_windows.erase(hWnd);
 
-        HWND root = GetAncestor(hWnd, GA_ROOT); 
+        HWND root = GetAncestor(hWnd, GA_ROOT);
         if (root)
             s_windows.erase(root);
     }
 
     static bool Skip(HWND hWnd, bool aggressivePaint = true) {
-        if (!hWnd) 
+        if (!hWnd) {
             return true;
-
+        }
         {
-            lock_t lock(s_mutex);  
-            if (s_windows.find(hWnd) != s_windows.end()) 
+            lock_t lock(s_mutex);
+            if (s_windows.find(hWnd) != s_windows.end())
                 return true;
 
             HWND root = GetAncestor(hWnd, GA_ROOT);
-            if (root && s_windows.find(root) != s_windows.end()) 
+            if (root && s_windows.find(root) != s_windows.end())
                 return true;
         }
 
-        if (aggressivePaint) 
+        if (aggressivePaint)
             return false;
 
         LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-        if (!(style & WS_CAPTION) || !(style & WS_THICKFRAME)) 
+        Wh_Log(L"Style=%x", style);
+
+        if (!(style & WS_CAPTION) || !(style & WS_THICKFRAME))
             return true;
 
         LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
-        if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED)) 
+        if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
             return true;
 
         return false;
@@ -525,6 +528,7 @@ class SkipWin {
     static void Clear() {
         lock_t lock(s_mutex);
 
+        Log(s_windows);
         for (auto& win : s_windows) {
             if (IsWindow(win.first)) {
                 RedrawWindow(
@@ -582,17 +586,16 @@ class Cfg {
                 return false;
 
             s_global.brush = brush;
-            // Wh_Log(L"Global color: %#x", backColor);
         }
 
         for (int i = 0;; ++i) {
             auto name = Cfg::GetProcessName(L"Process[%d].name", i);
-            if (name.empty()) 
+            if (name.empty())
                 break;
 
-            s_processes[name].aggressivePaint = 
+            s_processes[name].aggressivePaint =
                 Wh_GetIntSetting(L"Process[%d].aggressivePaint", i);
-            s_processes[name].longerPaint = 
+            s_processes[name].longerPaint =
                 Wh_GetIntSetting(L"Process[%d].longerPaint", i);
 
             int    backColor = ParseColor(L"Process[%d].backgroundColor");
@@ -600,20 +603,13 @@ class Cfg {
 
             if (brush)
                 s_processes[name].brush = brush;
-
-            // Wh_Log(L"'%s' Color: %#x", name.c_str(), backColor);
-            // Log(name);
-            // Log(brush);
-        }  
+        }
 
         // Wh_Log(L"Settings loaded");
-        // auto cls = WindhawkUtils::StringSetting::make(L"Global.aggressivePaint");
-        // Log(cls);
-        // Log(s_global);
-        int param = 122;
-        Log(param);
+        Log(s_global);
         Log(s_processes);
-        return false;
+
+        return true;
     }
 
     /**
@@ -622,13 +618,13 @@ class Cfg {
     static void Unload() {
         lock_t lock(s_mutex);
 
-        if (s_global.brush) { 
+        if (s_global.brush) {
             DeleteObject(s_global.brush);
         }
 
         for (auto &kv : s_processes) {
-            if (kv.second.brush) { 
-                DeleteObject(kv.second.brush); 
+            if (kv.second.brush) {
+                DeleteObject(kv.second.brush);
             }
         }
 
@@ -638,11 +634,13 @@ class Cfg {
     static Values Get() { return s_global; }
 
     /**
-    * @brief Returns values for specific process 
+    * @brief Returns values for specific process
     * or default (global) values.
     */
     static Values Get(HWND hWnd) {
         wstring name = ::GetProcessName(hWnd);
+        Wh_Log(L"%s (%x)", name.c_str(), hWnd);
+
         if (!name.empty()) {
             auto it = s_processes.find(name);
             if (it != s_processes.end())
@@ -675,7 +673,7 @@ private:
             return {};
         }
 
-        wstring name = wstring(value);
+        wstring name{ value };
         name.erase(0, name.find_first_not_of(L" \t\v\r\n"));  // left trim
         name.erase(name.find_last_not_of(L" \t\v\r\n") + 1);  // right trim
 
@@ -699,7 +697,7 @@ private:
         }
 
         const wchar_t* p = value;
-        while (*p && iswspace(*p)) 
+        while (*p && iswspace(*p))
             ++p;
 
         if (!*p) {
@@ -727,14 +725,15 @@ private:
             return color;
         }
 
-        if (*p == L'#') 
+        if (*p == L'#')
             ++p;
 
         bool hasHexAlpha = false;
         for (const wchar_t* t = p; *t; ++t) {
-            if (iswspace(*t)) 
+            if (iswspace(*t)) {
                 break;
-            if ((*t >= L'A' && *t <= L'F') 
+            }
+            if ((*t >= L'A' && *t <= L'F')
              || (*t >= L'a' && *t <= L'f')) {
                 hasHexAlpha = true;
                 break;
@@ -743,7 +742,7 @@ private:
 
         int base = hasHexAlpha ? 16 : 0; // base=0 honors 0x for hex, otherwise decimal
         unsigned long parsed = wcstoul(p, nullptr, base);
-        if (parsed > 0xFFFFFFUL) 
+        if (parsed > 0xFFFFFFUL)
             parsed &= 0xFFFFFFUL;
 
         int color = (int)parsed;
@@ -778,21 +777,21 @@ private:
 // == Main ==
 
 /**
-* @brief Covers the white background with a colored rectangle 
+* @brief Covers the white background with a colored rectangle
 * while the window is rendering.
 */
 LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCallback restore) {
     switch (Msg) {
     case WM_NCPAINT: {
-        // This message usually appears first 
+        // This message usually appears first
         // and it's common for windows.
-        // We're painting the non-client area first and 
-        // then restore() draws chrome elements 
+        // We're painting the non-client area first and
+        // then restore() draws chrome elements
         // (caption buttons, borders) on top of it.
         auto cfg = Cfg::Get(hWnd);
         if (SkipWin::Skip(hWnd, cfg.aggressivePaint))
              break;
-            
+
         HRGN hrgn = (HRGN)wParam;
         HDC  hdc;
         // paint the NC area
@@ -802,7 +801,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
             hdc = GetDCEx(hWnd, hrgn, DCX_WINDOW | DCX_USESTYLE | DCX_INTERSECTRGN);
         }
 
-        if (!hdc) 
+        if (!hdc)
             break;
 
         RECT rect;
@@ -811,15 +810,15 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
             break;
         }
 
-        rect = { 
+        rect = {
             0, 0,  // left upper corner
-            rect.right  - rect.left, 
-            rect.bottom - rect.top          
+            rect.right  - rect.left,
+            rect.bottom - rect.top
         };
 
         FillRect(hdc, &rect, cfg.brush);
         ReleaseDC(hWnd, hdc);
-        
+
         if (!cfg.aggressivePaint)
             SkipWin::Mark(hWnd);
 
@@ -829,7 +828,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         // This message is common for dialogs.
         // Apply the rectangle fill and cover the
         // white background during window rendering.
-        // It will be removed later so that the 
+        // It will be removed later so that the
         // window elements become visible.
         auto cfg = Cfg::Get(hWnd);
         if (SkipWin::Skip(hWnd, cfg.aggressivePaint))
@@ -849,7 +848,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         SkipWin::Mark(hWnd);
 
         return TRUE; // background erased - don't let the original erase it again
-    } 
+    }
     case WM_SETCURSOR:
     case WM_ENTERSIZEMOVE: {
         // Window is rendered, don't paint again
@@ -891,8 +890,8 @@ LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lPara
 
 BOOL Wh_ModInit() {
     Cfg::Load();
-    // Wh_Log(L">"); 
-/* 
+    // Wh_Log(L">");
+/*
     if (!Cfg::Load()) {
         Wh_Log(L"Failed load settings!");
         return FALSE;
@@ -909,12 +908,12 @@ BOOL Wh_ModInit() {
     if (!SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
         Wh_Log(L"Failed to hook DefDlgProcW!");
 
-    Wh_Log(L">"); 
+    Wh_Log(L">");
 */
     return TRUE;
 }
 
-BOOL Wh_ModSettingsChanged(BOOL*) {   
+BOOL Wh_ModSettingsChanged(BOOL*) {
     if (!Cfg::Load()) {
         Wh_Log(L"Failed to reload settings - unloading...");
         return FALSE;
