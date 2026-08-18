@@ -5,7 +5,6 @@
 // @version         0.1
 // @author          Rafaello
 // @github          https://github.com/JoyHak
-// @include explorer.exe
 // @include *
 // @exclude csrss.exe
 // @exclude dwm.exe
@@ -127,7 +126,7 @@ Fixes white flashes when opening new windows.
 #include <mutex>
 #include <unordered_map>
 #include <string>
-#include <type_traits>
+#include <concepts>
 
 #define DCX_USESTYLE  0x00010000L
 #define DEFAULT_COLOR 0x191919
@@ -142,13 +141,13 @@ decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
 decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
-// == verbose Logging ==
+// == Verbose Logging ==
 
 /**
  * @brief Format a narrow (char) printf-style string and append its converted UTF-16
  * representation to a wide output string using `MultiByteToWideChar` 
  * with the specified @p codePage.
- * @see dump_struct
+ * @see Dump, MultiByteToWideChar
  *
  * The function performs no modifications to @p out if any step fails (null format,
  * formatting error, or conversion failure).
@@ -220,7 +219,8 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
 
 namespace dbg {
 /**
-* @brief Dumps `obj` contents into the string.
+* @brief Dumps @p obj contents into the string. 
+* Supports primitives, strings and objects.
 * Dumps public and private fields, their type, name and value.
 *
 * @remark `__builtin_dump_struct` intrinsic returns narrow string (ANSI or UTF-8). 
@@ -234,14 +234,18 @@ namespace dbg {
 * https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
 *
 * @param[out] out
-*     `std::wstring` to which the @p obj contents will be appended.
+*     Target string to which the @p obj contents will be appended.
 * @param[in] obj
-*     Any class, struct or primitive.
+*     Any object, struct, string or primitive.
 */
 template<typename T>
 void Dump(wstring& out, const T& obj) {
     if constexpr (std::is_same_v<std::remove_cv_t<T>, wstring>) {
         out += L"\"" + obj + L"\"";
+        return;
+    } 
+    if constexpr (std::is_same_v<std::remove_cv_t<T>, std::string>) {
+        ToWide(out, CP_ACP, "\"%s\"", obj.data());
         return;
     } 
     
@@ -286,15 +290,57 @@ void Dump(wstring& out, const T& obj) {
         out += tmp.substr(start, end - start);
 }
 
-template<typename Key, typename Value, typename... Args>
-void Fmt(wstring& out, const unordered_map<Key, Value, Args...>& map_) {
-    out.reserve(map_.size() * 256); // heuristic reserve to reduce reallocations
+// template<typename T>
+// concept pair = requires (T t) {
+//     typename T::first_type;
+//     typename T::second_type;
+//     { t.first  } -> std::same_as<typename T::first_type  const&>;
+//     { t.second } -> std::same_as<typename T::second_type const&>;
+// };
 
-    for (const auto& kv : map_) {
+template<typename T>
+concept pair = requires (T t) {
+    typename T::first_type;
+    typename T::second_type;
+    { t.first }  -> std::same_as<typename T::first_type&>;
+    { t.second } -> std::same_as<typename T::second_type&>;
+};
+
+template<typename Cont>
+concept container = requires (Cont t) {
+    { std::begin(t) } -> std::input_or_output_iterator;
+    { std::end(t)   } -> std::input_or_output_iterator;
+    t.size();
+    typename Cont::value_type;
+};
+
+template<typename Cont>
+concept container_pairs = container<Cont> && pair<typename Cont::value_type>;
+
+template<typename Cont>
+concept container_linear = container<Cont> && (!pair<typename Cont::value_type>);
+
+// Helpers to create readable dump string
+
+template<container_pairs Cont>
+void Fmt(wstring& out, Cont& cont) {
+    out.reserve(cont.size() * 256); // heuristic reserve to reduce reallocations
+
+    for (const auto& kv : cont) {
         Dump(out, kv.first);
         out += L" -> ";
         Dump(out, kv.second);
         out += L"; ";
+    }
+}
+
+template<container_linear Cont>
+void Fmt(wstring& out, Cont& cont) {
+    out.reserve(cont.size() * 256); // heuristic reserve to reduce reallocations
+
+    for (const auto& val : cont) {
+        Dump(out, val);
+        out += L", ";
     }
 }
 
@@ -310,6 +356,11 @@ bool g_verbose = false;
 
 #define WIDE(x) L##x
 
+/**
+* @brief Outputs variable name and it's value. 
+* Outputs primitives; strings; objects and structs 
+* (names and values of their private and public fields)
+*/
 #define Log(obj)                                          \
     do {                                                  \
         if (dbg::g_verbose) {                             \
@@ -841,7 +892,7 @@ LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lPara
 
 BOOL Wh_ModInit() {
     Cfg::Load();
-    Wh_Log(L">"); 
+    // Wh_Log(L">"); 
 /* 
     if (!Cfg::Load()) {
         Wh_Log(L"Failed load settings!");
