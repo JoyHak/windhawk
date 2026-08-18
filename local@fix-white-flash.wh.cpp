@@ -177,7 +177,7 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
 
     // allocate narrow buffer and format into it 
     // (include space for terminating NUL)
-    std::string narrow;
+    std::string narrow{};
     narrow.resize(static_cast<size_t>(narrowLen) + 1);
     std::snprintf(
         narrow.data(), 
@@ -197,7 +197,7 @@ void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...arg
 
     // wideLen includes terminating NUL; 
     // resize to exclude the trailing null when appending
-    wstring wide;
+    wstring wide{};
     wide.resize(static_cast<size_t>(wideLen) - 1);
     
     MultiByteToWideChar(
@@ -237,7 +237,7 @@ void Dump(wstring& out, const T& obj) {
         return;
     } 
     
-    wstring tmp;
+    wstring tmp{};
     size_t start, end;
 
     if constexpr (std::is_class_v<T> || std::is_union_v<T>) {
@@ -279,8 +279,8 @@ void Dump(wstring& out, const T& obj) {
 }
 
 template<typename Key, typename Value, typename... Args>
-void _Log(const unordered_map<Key, Value, Args...>& map_, wstring name = L"") {
-    wstring out;
+void _Log(const unordered_map<Key, Value, Args...>& map_, wstring name = {}) {
+    wstring out{};
     out.reserve(name.size() + map_.size() * 256); // heuristic reserve to reduce reallocations
 
     if (!name.empty()) {
@@ -300,13 +300,9 @@ void _Log(const unordered_map<Key, Value, Args...>& map_, wstring name = L"") {
     Wh_Log(L"%s", out.c_str());
 }
 
-/**
-* @brief Outputs structures and classes contents.
-* Displays public and private fields, their names and values.
-*/
 template<typename T>
-void _Log(const T& obj, wstring name = L"") {
-    wstring out;
+void _Log(const T& obj, wstring name = {}) {
+    wstring out{};
 
     if (!name.empty()) {
         out += name + L" = ";
@@ -319,12 +315,12 @@ void _Log(const T& obj, wstring name = L"") {
 
 #define Log(obj)                                            \
     do {                                                    \
-        if (InternalWh_IsLogEnabled(InternalWhModPtr)) {    \
-            wstring _name;                                  \
+        if (true) {    \
+            wstring _name{};                                \
             ToWide(_name, CP_ACP, "%s", #obj);              \
             dbg::_Log((obj), _name);                        \
         }                                                   \
-    } while (0)                                             \
+    } while (0)
 
 // == Helpers ==
 
@@ -378,15 +374,15 @@ wstring GetProcessName(HWND hWnd) {
     }
 
     if (!ownerPid) {
-        return L"";
+        return {};
     }
 
     HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid);
     if (!hProc) {
-        return L"";
+        return {};
     }
 
-    wstring procName = L"";
+    wstring procName = {};
     WCHAR exePath[MAX_PATH] = {0};
     DWORD exePathLen = MAX_PATH;
 
@@ -412,7 +408,7 @@ wstring GetProcessName(HWND hWnd) {
         return g_cachedWindows[hWnd].name;
     }
 
-    return L"";
+    return {};
 }
 
 // == Data ==
@@ -502,7 +498,7 @@ class SkipWin {
     // inline = declaration also a definition
     // https://stackoverflow.com/a/46874207
     inline static std::mutex s_mutex;
-    inline static unordered_map<HWND, bool> s_windows;
+    inline static unordered_map<HWND, bool> s_windows{};
 };
 
 /**
@@ -732,7 +728,7 @@ private:
     // https://stackoverflow.com/a/46874207
     inline static std::mutex s_mutex;
     inline static Values s_global{};
-    inline static unordered_map<wstring, Values> s_processes;
+    inline static unordered_map<wstring, Values> s_processes{};
 };
 
 // == Main ==
