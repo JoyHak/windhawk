@@ -25,7 +25,9 @@
 // @exclude nvcplui.exe
 // @exclude nvcontainer.exe
 // @exclude git.exe
+// @exclude windhawk.exe
 // @exclude windhawk-cli.exe
+// @exclude VSCodium.exe
 // @exclude clang++.exe
 // @exclude clang-20.exe
 // @exclude ld.lld.exe
@@ -111,6 +113,12 @@ Fixes white flashes when opening new windows.
   $description: >-
     You can set individual parameters for each process. 
     Click "Add new item" below to add a new process.
+
+- verbose: false
+  $name: Verbose Logging
+  $description: >-
+    Output additional messages to the "output" tab and 
+    `user-data\logs\......\*-Windhawk Log.log` 
 */
 // ==/WindhawkModSettings==
 
@@ -134,7 +142,7 @@ decltype(&DefWindowProcW) DefWindowProcW_Original = nullptr;
 decltype(&DefDlgProcA)    DefDlgProcA_Original    = nullptr;
 decltype(&DefDlgProcW)    DefDlgProcW_Original    = nullptr;
 
-// == Debug Logging ==
+// == verbose Logging ==
 
 /**
  * @brief Format a narrow (char) printf-style string and append its converted UTF-16
@@ -279,47 +287,36 @@ void Dump(wstring& out, const T& obj) {
 }
 
 template<typename Key, typename Value, typename... Args>
-void _Log(const unordered_map<Key, Value, Args...>& map_, wstring name = {}) {
-    wstring out{};
-    out.reserve(name.size() + map_.size() * 256); // heuristic reserve to reduce reallocations
-
-    if (!name.empty()) {
-        out += name + L" = ";
-    }
+void Fmt(wstring& out, const unordered_map<Key, Value, Args...>& map_) {
+    out.reserve(map_.size() * 256); // heuristic reserve to reduce reallocations
 
     for (const auto& kv : map_) {
-        Key key = kv.first;
-        Value value = kv.second;
-        
-        Dump(out, key);
+        Dump(out, kv.first);
         out += L" -> ";
-        Dump(out, value);
+        Dump(out, kv.second);
         out += L"; ";
     }
-
-    Wh_Log(L"%s", out.c_str());
 }
 
 template<typename T>
-void _Log(const T& obj, wstring name = {}) {
-    wstring out{};
-
-    if (!name.empty()) {
-        out += name + L" = ";
-    }
-
+void Fmt(wstring& out, const T& obj) {
     Dump(out, obj);
-    Wh_Log(L"%s;", out.c_str());
+    out += L";";
 }
+
+bool g_verbose = false;
+
 } // dbg
 
-#define Log(obj)                                            \
-    do {                                                    \
-        if (true) {    \
-            wstring _name{};                                \
-            ToWide(_name, CP_ACP, "%s", #obj);              \
-            dbg::_Log((obj), _name);                        \
-        }                                                   \
+#define WIDE(x) L##x
+
+#define Log(obj)                                          \
+    do {                                                  \
+        if (dbg::g_verbose) {                             \
+            std::wstring _out(WIDE(#obj) L" = ");         \
+            dbg::Fmt(_out, (obj));                        \
+            Wh_Log(L"%s", _out.c_str());                  \
+        }                                                 \
     } while (0)
 
 // == Helpers ==
@@ -525,6 +522,8 @@ class Cfg {
     * @brief Loads all settings. Returns true on success.
     */
     static bool Load() {
+        dbg::g_verbose = Wh_GetIntSetting(L"verbose");
+
         Unload(); // safe cleanup
         lock_t lock(s_mutex);
 
@@ -841,8 +840,11 @@ LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lPara
 }
 
 BOOL Wh_ModInit() {
+    Cfg::Load();
+    Wh_Log(L">"); 
+/* 
     if (!Cfg::Load()) {
-        // Wh_Log(L"Failed load settings!");
+        Wh_Log(L"Failed load settings!");
         return FALSE;
     }
 
@@ -857,11 +859,12 @@ BOOL Wh_ModInit() {
     if (!SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
         Wh_Log(L"Failed to hook DefDlgProcW!");
 
-    Wh_Log(L">");
+    Wh_Log(L">"); 
+*/
     return TRUE;
 }
 
-BOOL Wh_ModSettingsChanged(BOOL*) {
+BOOL Wh_ModSettingsChanged(BOOL*) {   
     if (!Cfg::Load()) {
         Wh_Log(L"Failed to reload settings - unloading...");
         return FALSE;
