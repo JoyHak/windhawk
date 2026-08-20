@@ -52,14 +52,7 @@ Fixes white flashes when opening new windows.
 - Global:
     - backgroundColor: "0x191919"
       $name: Background Color
-      $description: Enter HEX (#RRGGBB or 0xRRGGBB) or RGB (25,25,25)
-      $options:
-        - "0x191919": Dark Gray
-        - "0x1E1E1E": Charcoal
-        - "0x2D2D2D": Slate
-        - "0x3A3A3A": Steel
-        - "0x000000": Black
-        - "0xFFFFFF": White
+      $description: Enter hex (#RRGGBB or 0xRRGGBB) or RGB(r,g,b)
 
     - aggressivePaint: true
       $name: Aggressive Painting
@@ -85,14 +78,7 @@ Fixes white flashes when opening new windows.
 
     - backgroundColor: "0x191919"
       $name: Background Color
-      $description: Enter HEX (#RRGGBB or 0xRRGGBB) or RGB (25,25,25)
-      $options:
-        - "0x191919": Dark Gray
-        - "0x1E1E1E": Charcoal
-        - "0x2D2D2D": Slate
-        - "0x3A3A3A": Steel
-        - "0x000000": Black
-        - "0xFFFFFF": White
+      $description: Enter hex (#RRGGBB or 0xRRGGBB) or RGB(r,g,b)
 
     - aggressivePaint: true
       $name: Aggressive Painting
@@ -129,7 +115,6 @@ Fixes white flashes when opening new windows.
 #include <concepts>     // for logging overloads
 
 #define DCX_USESTYLE  0x00010000L
-#define DEFAULT_COLOR 0x191919
 
 using std::wstring;
 using std::unordered_map;
@@ -143,7 +128,7 @@ using DefProcCallback = WNDPROC;
  * representation to a wide output string using `MultiByteToWideChar`
  * with the specified @p codePage.
  *
- * @remark It is used to convert narrow ANSI string from 
+ * @remark It is used to convert narrow ANSI string from
  * `__builtin_dump_struct` intrinsic (see `Dump` below) to wide UTF-16 string because
  * `Wh_Log` (macro around `InternalWh_Log_Wrapper`) expects wide string.
  * https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
@@ -154,7 +139,7 @@ using DefProcCallback = WNDPROC;
  *
  * @param[in] codePage
  *     Win32 code page identifier passed to `MultiByteToWideChar` (CP_UTF8, CP_ACP, ...)
- *     The chosen code page determines how the narrow bytes are interpreted 
+ *     The chosen code page determines how the narrow bytes are interpreted
  *     when converting to UTF-16.
  *
  * @param[in] format
@@ -164,7 +149,7 @@ using DefProcCallback = WNDPROC;
  *     Arguments corresponding to @p format. They are forwarded to `std::snprintf`.
  *
  * @warning Performs no modifications to @p out if any step fails (null @p format,
- * formatting error, or conversion failure); performs no any locale-aware normalization 
+ * formatting error, or conversion failure); performs no any locale-aware normalization
  * beyond the specified code page conversion.
  */
 template<typename... Args>
@@ -375,7 +360,17 @@ bool g_verbose = false;
 
 // == Helpers ==
 
-int Clamp(int value, int low, int high) {
+template <typename T>
+struct deferrer {
+	T f;
+	deferrer(T f) : f(f) { };
+	deferrer(const deferrer&) = delete;
+	~deferrer() { f(); }
+};
+
+#define defer deferrer _ =
+
+UINT Clamp(UINT value, UINT low, UINT high) {
     if (value < low)
         return low;
     if (value > high)
@@ -384,10 +379,10 @@ int Clamp(int value, int low, int high) {
     return value;
 }
 
-COLORREF ToColor(int rgb) {
-    int r = (rgb >> 16) & 0xFF;
-    int g = (rgb >> 8)  & 0xFF;
-    int b = rgb & 0xFF;
+COLORREF ToColor(UINT rgb) {
+    UINT r = (rgb >> 16) & 0xFF;
+    UINT g = (rgb >> 8)  & 0xFF;
+    UINT b = rgb & 0xFF;
 
     return RGB(r, g, b);
 }
@@ -518,7 +513,7 @@ class SkipWin {
             return false;
 
         LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-        Wh_Log(L"Style=%x", style);
+        Wh_Log(L"Style=0x%016llX", style);
 
         if (!(style & WS_CAPTION) || !(style & WS_THICKFRAME))
             return true;
@@ -587,7 +582,7 @@ class Cfg {
         s_global.aggressivePaint = Wh_GetIntSetting(L"Global.aggressivePaint");
         s_global.longerPaint     = Wh_GetIntSetting(L"Global.longerPaint");
         {
-            int    backColor = ParseColor(L"Global.backgroundColor");
+            UINT   backColor = ParseColor(L"Global.backgroundColor");
             HBRUSH brush     = TryCreateBrush(backColor);
 
             if (!brush)
@@ -606,7 +601,7 @@ class Cfg {
             s_processes[name].longerPaint =
                 Wh_GetIntSetting(L"Process[%d].longerPaint", i);
 
-            int    backColor = ParseColor(L"Process[%d].backgroundColor");
+            UINT   backColor = ParseColor(L"Process[%d].backgroundColor", i);
             HBRUSH brush     = TryCreateBrush(backColor);
 
             if (brush)
@@ -647,7 +642,7 @@ class Cfg {
     */
     static Values Get(HWND hWnd) {
         wstring name = ::GetProcessName(hWnd);
-        Wh_Log(L"%s (%x)", name.c_str(), hWnd);
+        Wh_Log(L"\"%s\" (%x)", name.c_str(), hWnd);
 
         if (!name.empty()) {
             auto it = s_processes.find(name);
@@ -682,8 +677,8 @@ private:
         }
 
         wstring name{ value };
-        name.erase(0, name.find_first_not_of(L" \t\v\r\n"));  // left trim
-        name.erase(name.find_last_not_of(L" \t\v\r\n") + 1);  // right trim
+        name.erase(0, name.find_first_not_of(L" \t\v\n"));  // left trim
+        name.erase(name.find_last_not_of(L" \t\v\n") + 1);  // right trim
 
         // Process name should be in lower case
         std::transform(name.begin(), name.end(), name.begin(), std::towlower);
@@ -693,80 +688,148 @@ private:
     }
 
     /**
-    * @brief Parses color from user: #RRGGBB, 0xRRGGBB, RGB (25,25,25)
+    * @brief Parses color from user: #RRGGBB, 0xRRGGBB, RGB(r,g,b)
     * @returns Integer that represents RGB (not COLORREF!).
     */
     template <typename... Args>
-    static int ParseColor(PCWSTR valueName, Args... args) {
+    static UINT ParseColor(PCWSTR valueName, Args... args) {
+        UINT color = UINT_MAX;
         PCWSTR value = Wh_GetStringSetting(valueName, args...);
+
+        defer [&] {
+            if (color == UINT_MAX) {
+                Wh_Log(L"Color \"%s\" is incorrect! Fall back to 0x%06x", value, kDefaultColor);
+            } else {
+                Wh_Log(L"Color \"%s\" -> 0x%06x", value, color);
+            }
+            if (value)
+                Wh_FreeStringSetting(value);
+        };
+
         if (!value) {
-            Wh_FreeStringSetting(value);
-            return DEFAULT_COLOR;
+            return kDefaultColor;
         }
-        // TODO: defer { Wh_Log(value, color); Wh_FreeStringSetting(value); }
+
         const wchar_t* p = value;
-        while (*p && iswspace(*p))
+        while (*p && iswspace(*p)) {
+            ++p;
+        }
+        if (*p == L'\0') {
+            return kDefaultColor;
+        }
+
+        // Parse RGB(r,g,b).
+        const bool isRgb =
+            (p[0] == L'r' || p[0] == L'R')
+         && (p[1] == L'g' || p[1] == L'G')
+         && (p[2] == L'b' || p[2] == L'B');
+
+        if (isRgb) {
+            p += 3;
+            while (*p && iswspace(*p)) {
+                ++p;
+            }
+            if (*p != L'(') {
+                return kDefaultColor;
+            }
             ++p;
 
-        if (!*p) {
-            Wh_FreeStringSetting(value);
-            return DEFAULT_COLOR;
-        }
+            UINT rgb[3] { 0, 0, 0 };
 
-        if (wcsncmp(p, L"rgb", 3) == 0) {
-            const wchar_t* open  = wcschr(p, L'(');
-            const wchar_t* close = wcschr(p, L')');
-            if (open && close && close > open) {
-                p = open + 1;
+            for (int i = 0; i < 3; ++i) {
+                while (*p && iswspace(*p)) {
+                    ++p;
+                }
+
+                bool hasDigit = false;
+                UINT number   = 0;
+                while (*p >= L'0' && *p <= L'9') {
+                    hasDigit = true;
+                    number   = number * 10 + (*p - L'0');
+                    ++p;
+                }
+
+                if (!hasDigit)
+                    return kDefaultColor;
+
+                rgb[i] = number;
+
+                while (*p == L',') {
+                    ++p;
+                }
             }
-        }
 
-        int r = -1, g = -1, b = -1;
+            const UINT r = Clamp(rgb[0], 0, 255);
+            const UINT g = Clamp(rgb[1], 0, 255);
+            const UINT b = Clamp(rgb[2], 0, 255);
 
-        if (swscanf_s(p, L"%d%*[, ]%d%*[, ]%d", &r, &g, &b) == 3) {
-            r = Clamp(r, 0, 255);
-            g = Clamp(g, 0, 255);
-            b = Clamp(b, 0, 255);
-            int color = (r << 16) | (g << 8) | b;
-
-            Wh_FreeStringSetting(value);
+            color = (r << 16) | (g << 8) | b;
             return color;
         }
 
-        if (*p == L'#')
-            ++p;
-
-        bool hasHexAlpha = false;
-        for (const wchar_t* t = p; *t; ++t) {
-            if (iswspace(*t)) {
-                break;
-            }
-            if ((*t >= L'A' && *t <= L'F')
-             || (*t >= L'a' && *t <= L'f')) {
-                hasHexAlpha = true;
-                break;
+        // Determine number base (decimal/hexadecimal)
+        ULONG base = 10;
+        if (p[0] == L'#') {
+            // #RRGGBB
+            base = 16;
+            p += 1;
+        } else if (p[0] == L'0'
+        && (p[1] == L'x' || p[1] == L'X')) {
+            // 0xRRGGBB
+            base = 16;
+            p += 2;
+        } else {
+            // A number
+            const wchar_t* t = p;
+            while (*t && !iswspace(*t)) {
+                if ((*t >= L'A' && *t <= L'F')
+                 || (*t >= L'a' && *t <= L'f')) {
+                    base = 16;
+                    break;
+                }
+                ++t;
             }
         }
 
-        int base = hasHexAlpha ? 16 : 0; // base=0 honors 0x for hex, otherwise decimal
-        unsigned long parsed = wcstoul(p, nullptr, base);
-        if (parsed > 0xFFFFFFUL)
-            parsed &= 0xFFFFFFUL;
+        // Convert string to number
+        bool hasDigit = false;
+        ULONG number = 0;
 
-        int color = (int)parsed;
+        while (*p != L'\0') {
+            ULONG digit = 0;
 
-        Wh_FreeStringSetting(value);
+            if (*p >= L'0' && *p <= L'9')
+                digit = *p - L'0';
+            else if (*p >= L'A' && *p <= L'F')
+                digit = *p - L'A' + 10;
+            else if (*p >= L'a' && *p <= L'f')
+                digit = *p - L'a' + 10;
+            else
+                break;
+
+            if (digit >= base)
+                return kDefaultColor;
+
+            hasDigit = true;
+            number   = number * base + digit;
+            ++p;
+        }
+
+        if (!hasDigit)
+            return kDefaultColor;
+
+        color = static_cast<UINT>(number & 0xFFFFFFUL);
         return color;
     }
 
     /**
-    * @brief Creates solid brush with fall back to DEFAULT_COLOR
+    * @brief Creates solid brush with fall back to `kDefaultColor`
     */
-    static HBRUSH TryCreateBrush(int rgb) {
+    static HBRUSH TryCreateBrush(UINT rgb) {
         HBRUSH brush = CreateSolidBrush(ToColor(rgb));
         if (!brush) {
-            Wh_Log(L"Failed to create %#x brush!", rgb);
-            brush = CreateSolidBrush(ToColor(DEFAULT_COLOR));
+            Wh_Log(L"Failed to create 0x%06x brush!", rgb);
+            brush = CreateSolidBrush(ToColor(kDefaultColor));
         }
         if (!brush) {
             Wh_Log(L"Failed to create default brush!");
@@ -780,6 +843,7 @@ private:
     inline static std::mutex s_mutex;
     inline static Values s_global{};
     inline static unordered_map<wstring, Values> s_processes{};
+    static constexpr int kDefaultColor = 0x191919;
 };
 
 // == Main ==
