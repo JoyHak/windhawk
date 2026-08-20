@@ -118,7 +118,7 @@ Fixes white flashes when opening new windows.
 
 using std::wstring;
 using std::unordered_map;
-using lock_t = std::lock_guard<std::mutex>;
+using Lock = std::lock_guard<std::mutex>;
 using DefProcCallback = WNDPROC;
 
 // == Verbose Logging ==
@@ -406,7 +406,7 @@ wstring GetProcessName(HWND hWnd) {
     DWORD ownerPid = 0;
     const DWORD ownerTid = GetWindowThreadProcessId(hWnd, &ownerPid);
     {
-        lock_t lock(g_cacheMutex);
+        Lock lock(g_cacheMutex);
         auto it = g_cachedWindows.find(hWnd);
 
         if (it != g_cachedWindows.end()
@@ -448,7 +448,7 @@ wstring GetProcessName(HWND hWnd) {
     CloseHandle(hProc);
 
     if (!procName.empty()) {
-        lock_t lock(g_cacheMutex);
+        Lock lock(g_cacheMutex);
         g_cachedWindows[hWnd] = ProcessData { ownerPid, ownerTid, procName };
         // return pointer stored in the map to ensure stable lifetime
         return g_cachedWindows[hWnd].name;
@@ -475,7 +475,7 @@ class SkipWin {
         if (!hWnd)
             return;
 
-        lock_t lock(s_mutex);
+        Lock lock(s_mutex);
         s_windows[hWnd] = true;
 
         HWND root = GetAncestor(hWnd, GA_ROOT);
@@ -487,7 +487,7 @@ class SkipWin {
         if (!hWnd)
             return;
 
-        lock_t lock(s_mutex);
+        Lock lock(s_mutex);
         s_windows.erase(hWnd);
 
         HWND root = GetAncestor(hWnd, GA_ROOT);
@@ -500,7 +500,7 @@ class SkipWin {
             return true;
         }
         {
-            lock_t lock(s_mutex);
+            Lock lock(s_mutex);
             if (s_windows.find(hWnd) != s_windows.end())
                 return true;
 
@@ -529,7 +529,7 @@ class SkipWin {
     * @brief Clears all marks and redraws previously-marked windows
     */
     static void Clear() {
-        lock_t lock(s_mutex);
+        Lock lock(s_mutex);
 
         Log(s_windows);
         for (auto& win : s_windows) {
@@ -577,7 +577,7 @@ class Cfg {
         dbg::g_verbose = Wh_GetIntSetting(L"verbose");
 
         Unload(); // safe cleanup
-        lock_t lock(s_mutex);
+        Lock lock(s_mutex);
 
         s_global.aggressivePaint = Wh_GetIntSetting(L"Global.aggressivePaint");
         s_global.longerPaint     = Wh_GetIntSetting(L"Global.longerPaint");
@@ -619,7 +619,7 @@ class Cfg {
     * @brief Frees brushes and clears maps.
     */
     static void Unload() {
-        lock_t lock(s_mutex);
+        Lock lock(s_mutex);
 
         if (s_global.brush) {
             DeleteObject(s_global.brush);
@@ -1003,7 +1003,7 @@ void Wh_ModUninit() {
     Cfg::Unload();
     SkipWin::Clear();
     {
-        lock_t lock(g_cacheMutex);
+        Lock lock(g_cacheMutex);
         g_cachedWindows.clear();
     }
 }
