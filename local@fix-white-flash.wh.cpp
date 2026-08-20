@@ -139,21 +139,23 @@ using DefProcCallback = WNDPROC;
 // == Verbose Logging ==
 
 /**
- * @brief Format a narrow (char) printf-style string and append its converted UTF-16
+ * @brief Formats a narrow (char) printf-style string and append its converted UTF-16
  * representation to a wide output string using `MultiByteToWideChar`
  * with the specified @p codePage.
- * @see Dump, MultiByteToWideChar
  *
- * The function performs no modifications to @p out if any step fails (null format,
- * formatting error, or conversion failure).
+ * @remark It is used to convert narrow ANSI string from 
+ * `__builtin_dump_struct` intrinsic (see `Dump` below) to wide UTF-16 string because
+ * `Wh_Log` (macro around `InternalWh_Log_Wrapper`) expects wide string.
+ * https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
+ * @see Dump
  *
  * @param[out] out
  *     `std::wstring` to which the converted wide text will be appended.
  *
  * @param[in] codePage
  *     Win32 code page identifier passed to `MultiByteToWideChar` (CP_UTF8, CP_ACP, ...)
- *     The chosen code page determines how the narrow bytes are interpreted when converting
- *     to UTF-16.
+ *     The chosen code page determines how the narrow bytes are interpreted 
+ *     when converting to UTF-16.
  *
  * @param[in] format
  *     printf-style format string. Must be non-null.
@@ -161,7 +163,9 @@ using DefProcCallback = WNDPROC;
  * @param[in] args
  *     Arguments corresponding to @p format. They are forwarded to `std::snprintf`.
  *
- * @warning it does not perform any locale-aware normalization beyond the specified code page conversion.
+ * @warning Performs no modifications to @p out if any step fails (null @p format,
+ * formatting error, or conversion failure); performs no any locale-aware normalization 
+ * beyond the specified code page conversion.
  */
 template<typename... Args>
 void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...args) {
@@ -217,16 +221,6 @@ namespace dbg {
 * @brief Dumps @p obj contents into the string.
 * Supports primitives, strings and objects.
 * Dumps public and private fields, their type, name and value.
-*
-* @remark `__builtin_dump_struct` intrinsic returns narrow string (ANSI or UTF-8).
-* `Wh_Log` (macro around `InternalWh_Log_Wrapper`) expects wide string (PCWSTR - wide UTF-16).
-* We must convert the narrow bytes to UTF-16 using `MultiByteToWideChar`
-* before passing to the `Wh_Log`.
-*
-* If we try to build a single char buffer by passing `sprintf` into intrinsic,
-* we must track the current write offset and guard against overflows.
-* So we use `ToWide` function with `vsnprintf` inside to ensure safety.
-* https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
 *
 * @param[out] out
 *     Target string to which the @p obj contents will be appended.
