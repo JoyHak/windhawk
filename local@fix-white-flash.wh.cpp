@@ -233,8 +233,10 @@ void Dump(wstring& out, const T& obj) {
         out += L"\"" + obj + L"\"";
         return;
     }
+
+    constexpr UINT codePage = CP_ACP;  // ANSI string
     if constexpr (std::is_same_v<std::remove_cv_t<T>, std::string>) {
-        ToWide(out, CP_ACP, "\"%s\"", obj.data());
+        ToWide(out, codePage, "\"%s\"", obj.data());
         return;
     }
 
@@ -242,22 +244,26 @@ void Dump(wstring& out, const T& obj) {
     size_t start{}, end{};
 
     if constexpr (std::is_class_v<T> || std::is_union_v<T>) {
-        // pass its address directly
-        __builtin_dump_struct(&obj, &ToWide, tmp, CP_ACP);
+        __builtin_dump_struct(&obj, &ToWide, tmp, codePage);
 
         // Trim class/struct type
-        start = tmp.find(L"{");
-        end   = tmp.rfind(L"}");
+        start = tmp.find(L'{');
+        end   = tmp.rfind(L'}');
 
-        if (end != wstring::npos)
+        if (start != wstring::npos) {
+            start += 3;
+            out += L'{';
+        }
+        if (end != wstring::npos) {
             end += 1;
+        }
     } else {
-        struct { T value; } v = { .value = obj };
-        __builtin_dump_struct(&v, &ToWide, tmp, CP_ACP);
+        struct { T value; } v { obj };
+        __builtin_dump_struct(&v, &ToWide, tmp, codePage);
 
         // Trim struct wrapper
-        start = tmp.find(L"value = ");
-        end   = tmp.rfind(L"}");
+        start = tmp.find(L'=');
+        end   = tmp.rfind(L'}');
 
         if (start != wstring::npos)
             start += 8;
@@ -292,7 +298,7 @@ concept container = requires (Cont t) {
     { std::begin(t) } -> std::input_or_output_iterator;
     { std::end(t)   } -> std::input_or_output_iterator;
     t.size();
-    typename Cont::value_type;
+    t.empty();
 };
 
 template<typename Cont>
@@ -306,6 +312,11 @@ concept container_linear = container<Cont>;
 
 template<container_pairs Cont>
 void Fmt(wstring& out, Cont& cont) {
+    if (cont.empty()) {
+        out += L"{};";
+        return;
+    }
+
     out.reserve(out.size() + cont.size() * 256); // heuristic reserve to reduce reallocations
     out += L"{ ";
 
@@ -322,6 +333,11 @@ void Fmt(wstring& out, Cont& cont) {
 
 template<container_linear Cont>
 void Fmt(wstring& out, Cont& cont) {
+    if (cont.empty()) {
+        out += L"[];";
+        return;
+    }
+
     out.reserve(out.size() + cont.size() * 256); // heuristic reserve to reduce reallocations
     out += L"[ ";
 
@@ -347,8 +363,6 @@ bool g_verbose = false;
 
 /**
 * @brief Outputs variable name and it's value.
-* Outputs primitives; strings; objects and structs
-* (names and values of their private and public fields)
 */
 #define Log(obj)                                          \
     do {                                                  \
