@@ -361,31 +361,14 @@ bool g_verbose = false;
 // == Helpers ==
 
 template <typename T>
-struct deferrer {
+struct Deferrer {
 	T f;
-	deferrer(T f) : f(f) { };
-	deferrer(const deferrer&) = delete;
-	~deferrer() { f(); }
+	Deferrer(T f) : f(f) { };
+	Deferrer(const Deferrer&) = delete;
+	~Deferrer() { f(); }
 };
 
-#define defer deferrer _ =
-
-UINT Clamp(UINT value, UINT low, UINT high) {
-    if (value < low)
-        return low;
-    if (value > high)
-        return high;
-
-    return value;
-}
-
-COLORREF ToColor(UINT rgb) {
-    UINT r = (rgb >> 16) & 0xFF;
-    UINT g = (rgb >> 8)  & 0xFF;
-    UINT b = rgb & 0xFF;
-
-    return RGB(r, g, b);
-}
+#define defer Deferrer _ =
 
 // == Cache ==
 
@@ -444,7 +427,7 @@ wstring GetProcessName(HWND hWnd) {
                 procName.begin(),
                 procName.end(),
                 procName.begin(),
-                ::towlower
+                std::towlower
             );
         }
     }
@@ -453,7 +436,7 @@ wstring GetProcessName(HWND hWnd) {
 
     if (!procName.empty()) {
         Lock lock(g_cacheMutex);
-        g_cachedWindows[hWnd] = ProcessData { ownerPid, ownerTid, procName };
+        g_cachedWindows[hWnd] = { ownerPid, ownerTid, procName };
         // return pointer stored in the map to ensure stable lifetime
         return g_cachedWindows[hWnd].name;
     }
@@ -475,7 +458,7 @@ class SkipWin {
     SkipWin& operator=(const SkipWin&) = delete;
     ~SkipWin() = delete;
 
-    static void Mark(HWND hWnd) {
+    static void mark(HWND hWnd) {
         if (!hWnd)
             return;
 
@@ -487,7 +470,7 @@ class SkipWin {
             s_windows[root] = true;
     }
 
-    static void Unmark(HWND hWnd) {
+    static void unmark(HWND hWnd) {
         if (!hWnd)
             return;
 
@@ -499,7 +482,7 @@ class SkipWin {
             s_windows.erase(root);
     }
 
-    static bool Skip(HWND hWnd, bool aggressivePaint = true) {
+    static bool skip(HWND hWnd, bool aggressivePaint = true) {
         if (!hWnd) {
             return true;
         }
@@ -532,7 +515,7 @@ class SkipWin {
     /**
     * @brief Clears all marks and redraws previously-marked windows
     */
-    static void Clear() {
+    static void clear() {
         Lock lock(s_mutex);
 
         Log(s_windows);
@@ -577,17 +560,17 @@ class Cfg {
     /**
     * @brief Loads all settings. Returns true on success.
     */
-    static bool Load() {
+    static bool load() {
         dbg::g_verbose = Wh_GetIntSetting(L"verbose");
 
-        Unload(); // safe cleanup
+        unload();  // safe cleanup
         Lock lock(s_mutex);
 
         s_global.aggressivePaint = Wh_GetIntSetting(L"Global.aggressivePaint");
         s_global.longerPaint     = Wh_GetIntSetting(L"Global.longerPaint");
         {
-            UINT   backColor = ParseColor(L"Global.backgroundColor");
-            HBRUSH brush     = TryCreateBrush(backColor);
+            UINT   backColor = parseColor(L"Global.backgroundColor");
+            HBRUSH brush     = tryCreateBrush(backColor);
 
             if (!brush)
                 return false;
@@ -596,10 +579,10 @@ class Cfg {
         }
 
         for (int i = 0;; ++i) {
-            auto name = Cfg::GetProcessName(L"Process[%d].name", i);
+            auto name = Cfg::getProcessName(L"Process[%d].name", i);
             if (name.empty())
                 break;
-            else if (name == kInvalidProcessName)
+            if (name == kInvalidProcessName)
                 continue;
 
             s_processes[name].aggressivePaint =
@@ -607,8 +590,8 @@ class Cfg {
             s_processes[name].longerPaint =
                 Wh_GetIntSetting(L"Process[%d].longerPaint", i);
 
-            UINT   backColor = ParseColor(L"Process[%d].backgroundColor", i);
-            HBRUSH brush     = TryCreateBrush(backColor);
+            UINT   backColor = parseColor(L"Process[%d].backgroundColor", i);
+            HBRUSH brush     = tryCreateBrush(backColor);
 
             if (brush)
                 s_processes[name].brush = brush;
@@ -624,7 +607,7 @@ class Cfg {
     /**
     * @brief Frees brushes and clears maps.
     */
-    static void Unload() {
+    static void unload() {
         Lock lock(s_mutex);
 
         if (s_global.brush) {
@@ -640,13 +623,13 @@ class Cfg {
         s_processes.clear();
     }
 
-    static Values Get() { return s_global; }
+    static Values get() { return s_global; }
 
     /**
     * @brief Returns values for specific process
     * or default (global) values.
     */
-    static Values Get(HWND hWnd) {
+    static Values get(HWND hWnd) {
         wstring name = ::GetProcessName(hWnd);
         Wh_Log(L"\"%s\" (%x)", name.c_str(), hWnd);
 
@@ -661,21 +644,10 @@ class Cfg {
 
 private:
     /**
-    * @brief Safe wrapper around string setting.
-    */
-    template <typename... Args>
-    inline static wstring GetString(PCWSTR valueName, Args... args) {
-        return wstring(
-            WindhawkUtils::StringSetting::make(valueName, args...)
-            .get()
-        );
-    }
-
-    /**
     * @brief Returns trimmed process name in lower case.
     */
     template <typename... Args>
-    static wstring GetProcessName(PCWSTR valueName, Args... args) {
+    static wstring getProcessName(PCWSTR valueName, Args... args) {
         PCWSTR value = Wh_GetStringSetting(valueName, args...);
         if (*value == L'\0')
             return {};
@@ -694,12 +666,31 @@ private:
         return name;
     }
 
+    // Helpers for color parsing
+
+    static UINT clamp(UINT value, UINT low, UINT high) {
+        if (value < low)
+            return low;
+        if (value > high)
+            return high;
+
+        return value;
+    }
+
+    static COLORREF toColor(UINT rgb) {
+        UINT r = (rgb >> 16) & 0xFF;
+        UINT g = (rgb >> 8)  & 0xFF;
+        UINT b = rgb & 0xFF;
+
+        return RGB(r, g, b);
+    }
+
     /**
     * @brief Parses color from user: #RRGGBB, 0xRRGGBB, RGB(r,g,b)
     * @returns Integer that represents RGB (not COLORREF!).
     */
     template <typename... Args>
-    static UINT ParseColor(PCWSTR valueName, Args... args) {
+    static UINT parseColor(PCWSTR valueName, Args... args) {
         UINT color = kInvalidColor;
         PCWSTR value = Wh_GetStringSetting(valueName, args...);
 
@@ -765,9 +756,9 @@ private:
                 }
             }
 
-            const UINT r = Clamp(rgb[0], 0, 255);
-            const UINT g = Clamp(rgb[1], 0, 255);
-            const UINT b = Clamp(rgb[2], 0, 255);
+            const UINT r = clamp(rgb[0], 0, 255);
+            const UINT g = clamp(rgb[1], 0, 255);
+            const UINT b = clamp(rgb[2], 0, 255);
 
             color = (r << 16) | (g << 8) | b;
             return color;
@@ -831,11 +822,11 @@ private:
     /**
     * @brief Creates solid brush with fall back to `kDefaultColor`
     */
-    static HBRUSH TryCreateBrush(UINT rgb) {
-        HBRUSH brush = CreateSolidBrush(ToColor(rgb));
+    static HBRUSH tryCreateBrush(UINT rgb) {
+        HBRUSH brush = CreateSolidBrush(toColor(rgb));
         if (!brush) {
             Wh_Log(L"Failed to create 0x%06x brush!", rgb);
-            brush = CreateSolidBrush(ToColor(kDefaultColor));
+            brush = CreateSolidBrush(toColor(kDefaultColor));
         }
         if (!brush) {
             Wh_Log(L"Failed to create default brush!");
@@ -868,8 +859,8 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         // We're painting the non-client area first and
         // then original() draws chrome elements
         // (caption buttons, borders) on top of it.
-        auto cfg = Cfg::Get(hWnd);
-        if (SkipWin::Skip(hWnd, cfg.aggressivePaint))
+        auto cfg = Cfg::get(hWnd);
+        if (SkipWin::skip(hWnd, cfg.aggressivePaint))
              break;
 
         HRGN hrgn = (HRGN)wParam;
@@ -900,7 +891,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         ReleaseDC(hWnd, hdc);
 
         if (!cfg.aggressivePaint)
-            SkipWin::Mark(hWnd);
+            SkipWin::mark(hWnd);
 
         break;
     }
@@ -910,8 +901,8 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         // white background during window rendering.
         // It will be removed later so that the
         // window elements become visible.
-        auto cfg = Cfg::Get(hWnd);
-        if (SkipWin::Skip(hWnd, cfg.aggressivePaint))
+        auto cfg = Cfg::get(hWnd);
+        if (SkipWin::skip(hWnd, cfg.aggressivePaint))
             break;
 
         RECT rect;
@@ -925,7 +916,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
 
         FillRect(hdc, &rect, cfg.brush);
         ReleaseDC(hWnd, hdc);
-        SkipWin::Mark(hWnd);
+        SkipWin::mark(hWnd);
 
         return TRUE; // background erased - don't let the original erase it again
     }
@@ -934,12 +925,12 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
     case WM_ENTERSIZEMOVE: {
         // TODO: fix message queue
         // Window is rendered, don't paint again
-        SkipWin::Mark(hWnd);
+        SkipWin::mark(hWnd);
         break;
     }
     case WM_NCDESTROY: {
         // Window is destroyed, allow painting later
-        SkipWin::Unmark(hWnd);
+        SkipWin::unmark(hWnd);
         break;
     }
     } // switch
@@ -971,7 +962,7 @@ LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lPara
 }
 
 BOOL Wh_ModInit() {
-    Cfg::Load();
+    Cfg::load();
     // Wh_Log(L">");
 /*
     if (!Cfg::Load()) {
@@ -996,7 +987,7 @@ BOOL Wh_ModInit() {
 }
 
 BOOL Wh_ModSettingsChanged(BOOL*) {
-    if (!Cfg::Load()) {
+    if (!Cfg::load()) {
         Wh_Log(L"Failed to reload settings - unloading...");
         return FALSE;
     }
@@ -1008,8 +999,8 @@ BOOL Wh_ModSettingsChanged(BOOL*) {
 void Wh_ModUninit() {
     Wh_Log(L">");
 
-    Cfg::Unload();
-    SkipWin::Clear();
+    Cfg::unload();
+    SkipWin::clear();
     {
         Lock lock(g_cacheMutex);
         g_cachedWindows.clear();
