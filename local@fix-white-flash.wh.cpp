@@ -403,6 +403,10 @@ unordered_map<HWND, ProcessData> g_cachedWindows;
 * and stores it in the cache to avoid multiple syscalls.
 */
 wstring GetProcessName(HWND hWnd) {
+    if (!hWnd) {
+        return {};
+    }
+
     DWORD ownerPid = 0;
     const DWORD ownerTid = GetWindowThreadProcessId(hWnd, &ownerPid);
     {
@@ -595,6 +599,8 @@ class Cfg {
             auto name = Cfg::GetProcessName(L"Process[%d].name", i);
             if (name.empty())
                 break;
+            else if (name == kInvalidProcessName)
+                continue;
 
             s_processes[name].aggressivePaint =
                 Wh_GetIntSetting(L"Process[%d].aggressivePaint", i);
@@ -671,19 +677,20 @@ private:
     template <typename... Args>
     static wstring GetProcessName(PCWSTR valueName, Args... args) {
         PCWSTR value = Wh_GetStringSetting(valueName, args...);
-        if (!value) {
-            Wh_FreeStringSetting(value);
+        if (*value == L'\0')
             return {};
-        }
+
+        defer [&] { Wh_FreeStringSetting(value); };  // empty value cannot be freed
 
         wstring name{ value };
         name.erase(0, name.find_first_not_of(L" \t\v\n"));  // left trim
         name.erase(name.find_last_not_of(L" \t\v\n") + 1);  // right trim
 
+        if (name.empty())
+            return kInvalidProcessName;
+
         // Process name should be in lower case
         std::transform(name.begin(), name.end(), name.begin(), std::towlower);
-
-        Wh_FreeStringSetting(value);
         return name;
     }
 
@@ -693,20 +700,19 @@ private:
     */
     template <typename... Args>
     static UINT ParseColor(PCWSTR valueName, Args... args) {
-        UINT color = UINT_MAX;
+        UINT color = kInvalidColor;
         PCWSTR value = Wh_GetStringSetting(valueName, args...);
 
         defer [&] {
-            if (color == UINT_MAX) {
+            if (color == kInvalidColor) {
                 Wh_Log(L"Color \"%s\" is incorrect! Fall back to 0x%06x", value, kDefaultColor);
             } else {
                 Wh_Log(L"Color \"%s\" -> 0x%06x", value, color);
             }
-            if (value)
-                Wh_FreeStringSetting(value);
+            Wh_FreeStringSetting(value);
         };
 
-        if (!value) {
+        if (*value == L'\0') {
             return kDefaultColor;
         }
 
@@ -843,7 +849,9 @@ private:
     inline static std::mutex s_mutex;
     inline static Values s_global{};
     inline static unordered_map<wstring, Values> s_processes{};
-    static constexpr int kDefaultColor = 0x191919;
+    static constexpr UINT kDefaultColor = 0x191919;
+    static constexpr UINT kInvalidColor = UINT_MAX;
+    static constexpr PCWSTR kInvalidProcessName{ L"<ipn>" };
 };
 
 // == Main ==
