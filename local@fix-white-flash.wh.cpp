@@ -703,7 +703,7 @@ private:
             Wh_FreeStringSetting(value);
             return DEFAULT_COLOR;
         }
-
+        // TODO: defer { Wh_Log(value, color); Wh_FreeStringSetting(value); }
         const wchar_t* p = value;
         while (*p && iswspace(*p))
             ++p;
@@ -788,13 +788,13 @@ private:
 * @brief Covers the white background with a colored rectangle
 * while the window is rendering.
 */
-LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCallback restore) {
+LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCallback original) {
     switch (Msg) {
     case WM_NCPAINT: {
         // This message usually appears first
         // and it's common for windows.
         // We're painting the non-client area first and
-        // then restore() draws chrome elements
+        // then original() draws chrome elements
         // (caption buttons, borders) on top of it.
         auto cfg = Cfg::Get(hWnd);
         if (SkipWin::Skip(hWnd, cfg.aggressivePaint))
@@ -857,8 +857,10 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
 
         return TRUE; // background erased - don't let the original erase it again
     }
+    case WM_ACTIVATEAPP:
     case WM_SETCURSOR:
     case WM_ENTERSIZEMOVE: {
+        // TODO: fix message queue
         // Window is rendered, don't paint again
         SkipWin::Mark(hWnd);
         break;
@@ -870,7 +872,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
     }
     } // switch
 
-    return restore(hWnd, Msg, wParam, lParam);
+    return original(hWnd, Msg, wParam, lParam);
 }
 
 // == Hook rendering procedures ==
