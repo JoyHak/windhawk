@@ -382,9 +382,9 @@ std::mutex g_cacheMutex;
 unordered_map<HWND, ProcessData> g_cachedWindows;
 
 /**
-* @brief Queries name of the process by window handle
-* and stores it in the cache to avoid multiple syscalls.
-*/
+ * @brief Queries name of the process by window handle
+ * and stores it in the cache to avoid multiple syscalls.
+ */
 wstring GetProcessName(HWND hWnd) {
     if (!hWnd) {
         return {};
@@ -444,77 +444,72 @@ wstring GetProcessName(HWND hWnd) {
     return {};
 }
 
+inline HWND GetRoot(HWND hWnd) { 
+    return GetAncestor(hWnd, GA_ROOT); 
+}
+
+/**
+ * @brief Checks if element is child, small, border or not main window.
+ */
+static bool ShouldSkip(HWND hWnd) {
+    LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    if ((style & WS_CHILD) 
+    || !(style & WS_CAPTION) 
+    || !(style & WS_THICKFRAME))
+        return true;
+
+    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+    if (exStyle & WS_EX_LAYERED)
+        return true;
+
+    return false;
+}
+
 // == Data ==
 
 /**
  * @brief Holds marks that window and its root ancestor
  * are rendered (skip painting).
- * Can be checked via `SkipWin::Skip(hWnd)`
  */
-class SkipWin {
+class Win {
+    static constexpr uint8_t kPainted = 1;  // window has at least one paint
+    static constexpr uint8_t kCreated = 2;  // window and it's root is created
+
   public:
-    SkipWin() = delete;
-    SkipWin(const SkipWin&) = delete;
-    SkipWin& operator=(const SkipWin&) = delete;
-    ~SkipWin() = delete;
-
-    static void mark(HWND hWnd) {
-        if (!hWnd)
-            return;
-
-        Lock lock(s_mutex);
-        s_windows[hWnd] = true;
-
-        HWND root = GetAncestor(hWnd, GA_ROOT);
-        if (root)
-            s_windows[root] = true;
+    inline static void setPainted(HWND hWnd, HWND root = NULL) { 
+        set(hWnd, root, kPainted); 
+    }
+    inline static void unsetPainted(HWND hWnd, HWND root = NULL) { 
+        unset(hWnd, root, kPainted); 
+    }
+    inline static bool painted(HWND hWnd, HWND root = NULL) { 
+        return test(hWnd, root, kPainted); 
     }
 
-    static void unmark(HWND hWnd) {
-        if (!hWnd)
-            return;
+    inline static void setCreated(HWND hWnd, HWND root = NULL) { 
+        set(hWnd, root, kCreated); 
+    }
+    inline static void unsetCreated(HWND hWnd, HWND root = NULL) { 
+        unset(hWnd, root, kCreated); 
+    }
+    inline static bool created(HWND hWnd, HWND root = NULL) { 
+        return test(hWnd, root, kCreated); 
+    }
 
+    /**
+     * @brief Erases states for a window and it's root (optionally)
+     */
+    static void erase(HWND hWnd, HWND root = NULL) {
         Lock lock(s_mutex);
         s_windows.erase(hWnd);
 
-        HWND root = GetAncestor(hWnd, GA_ROOT);
         if (root)
             s_windows.erase(root);
     }
 
-    static bool skip(HWND hWnd, bool aggressivePaint = true) {
-        if (!hWnd) {
-            return true;
-        }
-        {
-            Lock lock(s_mutex);
-            if (s_windows.find(hWnd) != s_windows.end())
-                return true;
-
-            HWND root = GetAncestor(hWnd, GA_ROOT);
-            if (root && s_windows.find(root) != s_windows.end())
-                return true;
-        }
-
-        if (aggressivePaint)
-            return false;
-
-        LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-        Wh_Log(L"Style=0x%016llX", style);
-
-        if (!(style & WS_CAPTION) || !(style & WS_THICKFRAME))
-            return true;
-
-        LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
-        if ((style & WS_CHILD) || (exStyle & WS_EX_LAYERED))
-            return true;
-
-        return false;
-    }
-
     /**
-    * @brief Clears all marks and redraws previously-marked windows
-    */
+     * @brief Erases all states and redraws stored windows
+     */
     static void clear() {
         Lock lock(s_mutex);
 
@@ -530,11 +525,53 @@ class SkipWin {
         s_windows.clear();
     }
 
+    Win() = delete;
+    Win(const Win&) = delete;
+    Win& operator=(const Win&) = delete;
+    ~Win() = delete;
+
   private:
+    inline static void set(HWND hWnd, HWND root, uint8_t value) {
+        Lock lock(s_mutex);
+        s_windows[hWnd] |= value;
+
+        if (root)  
+            s_windows[root] |= value;
+    }
+
+    inline static void unset(HWND hWnd, HWND root, uint8_t value) {
+        Lock lock(s_mutex);
+        s_windows[hWnd] &= ~value;
+
+        if (root)
+            s_windows[root] &= ~value;
+    }
+
+    inline static bool test(HWND hWnd, HWND root, uint8_t value) {
+        Lock lock(s_mutex);
+
+        auto i = s_windows.find(hWnd);
+        if (i != s_windows.end() 
+        && (i->second & value)) {
+            return true;
+        }
+
+        if (!root) {
+            return false;
+        }
+
+        auto j = s_windows.find(root);
+        if (j != s_windows.end() 
+        && (j->second & value)) {
+            return true;
+        }
+
+        return false;
+    }
     // inline = declaration also a definition
     // https://stackoverflow.com/a/46874207
     inline static std::mutex s_mutex;
-    inline static unordered_map<HWND, bool> s_windows{};
+    inline static unordered_map<HWND, uint8_t> s_windows{};
 };
 
 /**
@@ -543,11 +580,6 @@ class SkipWin {
  */
 class Cfg {
   public:
-    Cfg() = delete;
-    Cfg(const Cfg&) = delete;
-    Cfg& operator=(const Cfg&) = delete;
-    ~Cfg() = delete;
-
     /**
     * @brief Available user settings.
     */
@@ -597,7 +629,6 @@ class Cfg {
                 s_processes[name].brush = brush;
         }
 
-        // Wh_Log(L"Settings loaded");
         Log(s_global);
         Log(s_processes);
 
@@ -631,7 +662,7 @@ class Cfg {
     */
     static Values get(HWND hWnd) {
         wstring name = ::GetProcessName(hWnd);
-        Wh_Log(L"\"%s\" (%x)", name.c_str(), hWnd);
+        // Wh_Log(L"\"%s\" (%x)", name.c_str(), hWnd);
 
         if (!name.empty()) {
             auto it = s_processes.find(name);
@@ -641,6 +672,11 @@ class Cfg {
 
         return s_global;
     }
+
+    Cfg() = delete;
+    Cfg(const Cfg&) = delete;
+    Cfg& operator=(const Cfg&) = delete;
+    ~Cfg() = delete;
 
 private:
     /**
@@ -848,34 +884,41 @@ private:
 // == Main ==
 
 /**
-* @brief Covers the white background with a colored rectangle
-* while the window is rendering.
-*/
+ * @brief Covers the white background with a colored rectangle
+ * while the window is rendering.
+ */
 LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCallback original) {
+    if (!hWnd) {
+        return original(hWnd, Msg, wParam, lParam);
+    }
+
     switch (Msg) {
     case WM_NCPAINT: {
-        // This message usually appears first
-        // and it's common for windows.
+        // This message handling is responsible for most regions.
         // We're painting the non-client area first and
         // then original() draws chrome elements
         // (caption buttons, borders) on top of it.
+        if (Win::painted(hWnd, GetRoot(hWnd)))
+            break;
+
         auto cfg = Cfg::get(hWnd);
-        if (SkipWin::skip(hWnd, cfg.aggressivePaint))
-             break;
+        if (!cfg.longerPaint && ShouldSkip(hWnd))
+            break;
 
         HRGN hrgn = (HRGN)wParam;
-        HDC  hdc;
+        HDC  hdc{};
+
         // paint the NC area
         if (hrgn == (HRGN)1) {
             hdc = GetDCEx(hWnd, NULL, DCX_WINDOW | DCX_USESTYLE | 0);
         } else {
             hdc = GetDCEx(hWnd, hrgn, DCX_WINDOW | DCX_USESTYLE | DCX_INTERSECTRGN);
         }
-
-        if (!hdc)
+        if (!hdc) {
             break;
+        }
 
-        RECT rect;
+        RECT rect{};
         if (!GetWindowRect(hWnd, &rect)) {
             ReleaseDC(hWnd, hdc);
             break;
@@ -889,23 +932,24 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
 
         FillRect(hdc, &rect, cfg.brush);
         ReleaseDC(hWnd, hdc);
-
-        if (!cfg.aggressivePaint)
-            SkipWin::mark(hWnd);
+        Win::setPainted(hWnd);  // prevent any flicks
 
         break;
     }
     case WM_ERASEBKGND: {
         // This message is common for dialogs.
-        // Apply the rectangle fill and cover the
-        // white background during window rendering.
-        // It will be removed later so that the
-        // window elements become visible.
+        // Erase white background and replace it
+        // with colorful rectangle.
+        // It will be removed later and
+        // window elements will become visible.
+        if (Win::painted(hWnd, GetRoot(hWnd)))
+            break;
+            
         auto cfg = Cfg::get(hWnd);
-        if (SkipWin::skip(hWnd, cfg.aggressivePaint))
+        if (ShouldSkip(hWnd))   // prevent any visual issues
             break;
 
-        RECT rect;
+        RECT rect{};
         if (!GetClientRect(hWnd, &rect))
             break;
 
@@ -915,26 +959,58 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         }
 
         FillRect(hdc, &rect, cfg.brush);
-        ReleaseDC(hWnd, hdc);
-        SkipWin::mark(hWnd);
-
-        return TRUE; // background erased - don't let the original erase it again
+        return TRUE;  // don't let the original erase it again
     }
-    case WM_ACTIVATEAPP:
-    case WM_SETCURSOR:
-    case WM_ENTERSIZEMOVE: {
-        // TODO: fix message queue
-        // Window is rendered, don't paint again
-        SkipWin::mark(hWnd);
+    case WM_PAINT: {
+        // This message appears very frequently.
+        // Set "painted" state temporary to reduce painting
+        auto cfg = Cfg::get(hWnd);
+        if (cfg.aggressivePaint)
+            break;
+
+        PAINTSTRUCT paint{};
+        HDC hdc = BeginPaint(hWnd, &paint);
+        if (!hdc) {
+            break;
+        }
+
+        Win::setPainted(hWnd);
+        LRESULT result = original(hWnd, Msg, wParam, lParam);
+
+        Win::unsetPainted(hWnd);
+        EndPaint(hWnd, &paint);
+
+        return result;
+    }
+    case WM_THEMECHANGED:
+    case WM_SYSCOLORCHANGE:
+    case WM_DPICHANGED:
+    case WM_SETTINGCHANGE:
+    case WM_ENABLE:
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS: {
+        // Window is ready for painting 
+        // after switch back to the window
+        HWND root = GetRoot(hWnd);
+        if (Win::created(hWnd, root)) {
+            Win::erase(hWnd, root);
+        }
+        break;
+    }
+    case WM_CREATE: {
+        // Prepare for above
+        Win::setCreated(hWnd, GetRoot(hWnd));
         break;
     }
     case WM_NCDESTROY: {
-        // Window is destroyed, allow painting later
-        SkipWin::unmark(hWnd);
+        // Window is destroyed.
+        // Forget all states to paint again later.
+        Win::erase(hWnd, GetRoot(hWnd));
         break;
     }
     } // switch
 
+    // Draw all required elements and regions
     return original(hWnd, Msg, wParam, lParam);
 }
 
@@ -962,12 +1038,11 @@ LRESULT WINAPI DefDlgProcW_Hook(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lPara
 }
 
 BOOL Wh_ModInit() {
-    Cfg::load();
-    // Wh_Log(L">");
-/*
-    if (!Cfg::Load()) {
+    if (Cfg::load()) {
+        Wh_Log(L"Settings loaded");
+    } else {
         Wh_Log(L"Failed load settings!");
-        return FALSE;
+        return FALSE;    
     }
 
     using WindhawkUtils::SetFunctionHook;
@@ -981,26 +1056,24 @@ BOOL Wh_ModInit() {
     if (!SetFunctionHook(DefDlgProcW, DefDlgProcW_Hook, &DefDlgProcW_Original))
         Wh_Log(L"Failed to hook DefDlgProcW!");
 
-    Wh_Log(L">");
-*/
     return TRUE;
 }
 
 BOOL Wh_ModSettingsChanged(BOOL*) {
-    if (!Cfg::load()) {
+    if (Cfg::load()) {
+        Wh_Log(L"Settings reloaded");
+        return TRUE;
+    } else {
         Wh_Log(L"Failed to reload settings - unloading...");
-        return FALSE;
+        return FALSE;    
     }
-
-    Wh_Log(L">");
-    return TRUE;
 }
 
 void Wh_ModUninit() {
     Wh_Log(L">");
 
     Cfg::unload();
-    SkipWin::clear();
+    Win::clear();
     {
         Lock lock(g_cacheMutex);
         g_cachedWindows.clear();
