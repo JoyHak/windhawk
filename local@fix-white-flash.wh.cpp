@@ -370,102 +370,96 @@ struct Deferrer {
 
 #define defer Deferrer _ =
 
-// == Cache ==
-
-struct ProcessData {
-    DWORD processId = 0;
-    DWORD threadId  = 0;
-    wstring name;
-};
-
-std::mutex g_cacheMutex;
-unordered_map<HWND, ProcessData> g_cachedWindows;
-
-/**
- * @brief Queries name of the process by window handle
- * and stores it in the cache to avoid multiple syscalls.
- */
-wstring GetProcessName(HWND hWnd) {
-    if (!hWnd) {
-        return {};
-    }
-
-    DWORD ownerPid = 0;
-    const DWORD ownerTid = GetWindowThreadProcessId(hWnd, &ownerPid);
-    {
-        Lock lock(g_cacheMutex);
-        auto it = g_cachedWindows.find(hWnd);
-
-        if (it != g_cachedWindows.end()
-         && it->second.processId == ownerPid
-         && it->second.threadId  == ownerTid) {
-            return it->second.name;
-        }
-
-        if (it != g_cachedWindows.end())
-            g_cachedWindows.erase(it);
-    }
-
-    if (!ownerPid) {
-        return {};
-    }
-
-    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid);
-    if (!hProc) {
-        return {};
-    }
-
-    wstring procName{};
-    WCHAR exePath[MAX_PATH] = {0};
-    DWORD exePathLen = MAX_PATH;
-
-    if (QueryFullProcessImageNameW(hProc, 0, exePath, &exePathLen)) {
-        WCHAR* name = wcsrchr(exePath, L'\\');
-        if (name) {
-            procName = (name + 1);
-            std::transform(
-                procName.begin(),
-                procName.end(),
-                procName.begin(),
-                std::towlower
-            );
-        }
-    }
-
-    CloseHandle(hProc);
-
-    if (!procName.empty()) {
-        Lock lock(g_cacheMutex);
-        g_cachedWindows[hWnd] = { ownerPid, ownerTid, procName };
-        // return pointer stored in the map to ensure stable lifetime
-        return g_cachedWindows[hWnd].name;
-    }
-
-    return {};
-}
-
-inline HWND GetRoot(HWND hWnd) { 
-    return GetAncestor(hWnd, GA_ROOT); 
-}
-
-/**
- * @brief Checks if element is child, small, border or not main window.
- */
-static bool ShouldSkip(HWND hWnd) {
-    LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-    if ((style & WS_CHILD) 
-    || !(style & WS_CAPTION) 
-    || !(style & WS_THICKFRAME))
-        return true;
-
-    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
-    if (exStyle & WS_EX_LAYERED)
-        return true;
-
-    return false;
-}
-
 // == Data ==
+
+class Process {
+  public:
+    /**
+     * @brief Queries name of the process by window handle
+     * and stores it in the cache to avoid multiple syscalls.
+     */
+    static wstring getName(HWND hWnd) {
+        if (!hWnd) {
+            return {};
+        }
+
+        DWORD ownerPid = 0;
+        const DWORD ownerTid = GetWindowThreadProcessId(hWnd, &ownerPid);
+        {
+            Lock lock(s_mutex);
+            auto it = s_windows.find(hWnd);
+
+            if (it != s_windows.end()
+            && it->second.processId == ownerPid
+            && it->second.threadId  == ownerTid) {
+                return it->second.name;
+            }
+
+            if (it != s_windows.end())
+                s_windows.erase(it);
+        }
+
+        if (!ownerPid) {
+            return {};
+        }
+
+        HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid);
+        if (!hProc) {
+            return {};
+        }
+
+        wstring procName{};
+        WCHAR exePath[MAX_PATH] = {0};
+        DWORD exePathLen = MAX_PATH;
+
+        if (QueryFullProcessImageNameW(hProc, 0, exePath, &exePathLen)) {
+            WCHAR* name = wcsrchr(exePath, L'\\');
+            if (name) {
+                procName = (name + 1);
+                std::transform(
+                    procName.begin(),
+                    procName.end(),
+                    procName.begin(),
+                    std::towlower
+                );
+            }
+        }
+
+        CloseHandle(hProc);
+
+        if (!procName.empty()) {
+            Lock lock(s_mutex);
+            s_windows[hWnd] = { ownerPid, ownerTid, procName };
+            // return pointer stored in the map to ensure stable lifetime
+            return s_windows[hWnd].name;
+        }
+
+        return {};
+    }
+
+    static void clear() {
+        Lock lock(s_mutex);
+        s_windows.clear();
+    }
+
+    Process() = delete;
+    Process(const Process&) = delete;
+    Process& operator=(const Process&) = delete;
+    ~Process() = delete;
+
+  private:
+    struct Cache {
+        DWORD processId = 0;
+        DWORD threadId  = 0;
+        wstring name;
+    };
+
+    // inline = declaration also a definition
+    // https://stackoverflow.com/a/46874207
+    inline static std::mutex s_mutex;
+    inline static unordered_map<HWND, Cache> s_windows;
+
+};
 
 /**
  * @brief Holds marks that window and its root ancestor
@@ -476,24 +470,24 @@ class Win {
     static constexpr uint8_t kCreated = 2;  // window and it's root is created
 
   public:
-    inline static void setPainted(HWND hWnd, HWND root = NULL) { 
-        set(hWnd, root, kPainted); 
+    inline static void setPainted(HWND hWnd, HWND root = NULL) {
+        set(hWnd, root, kPainted);
     }
-    inline static void unsetPainted(HWND hWnd, HWND root = NULL) { 
-        unset(hWnd, root, kPainted); 
+    inline static void unsetPainted(HWND hWnd, HWND root = NULL) {
+        unset(hWnd, root, kPainted);
     }
-    inline static bool painted(HWND hWnd, HWND root = NULL) { 
-        return test(hWnd, root, kPainted); 
+    inline static bool painted(HWND hWnd, HWND root = NULL) {
+        return test(hWnd, root, kPainted);
     }
 
-    inline static void setCreated(HWND hWnd, HWND root = NULL) { 
-        set(hWnd, root, kCreated); 
+    inline static void setCreated(HWND hWnd, HWND root = NULL) {
+        set(hWnd, root, kCreated);
     }
-    inline static void unsetCreated(HWND hWnd, HWND root = NULL) { 
-        unset(hWnd, root, kCreated); 
+    inline static void unsetCreated(HWND hWnd, HWND root = NULL) {
+        unset(hWnd, root, kCreated);
     }
-    inline static bool created(HWND hWnd, HWND root = NULL) { 
-        return test(hWnd, root, kCreated); 
+    inline static bool created(HWND hWnd, HWND root = NULL) {
+        return test(hWnd, root, kCreated);
     }
 
     /**
@@ -535,7 +529,7 @@ class Win {
         Lock lock(s_mutex);
         s_windows[hWnd] |= value;
 
-        if (root)  
+        if (root)
             s_windows[root] |= value;
     }
 
@@ -551,7 +545,7 @@ class Win {
         Lock lock(s_mutex);
 
         auto i = s_windows.find(hWnd);
-        if (i != s_windows.end() 
+        if (i != s_windows.end()
         && (i->second & value)) {
             return true;
         }
@@ -561,15 +555,14 @@ class Win {
         }
 
         auto j = s_windows.find(root);
-        if (j != s_windows.end() 
+        if (j != s_windows.end()
         && (j->second & value)) {
             return true;
         }
 
         return false;
     }
-    // inline = declaration also a definition
-    // https://stackoverflow.com/a/46874207
+
     inline static std::mutex s_mutex;
     inline static unordered_map<HWND, uint8_t> s_windows{};
 };
@@ -661,7 +654,7 @@ class Cfg {
     * or default (global) values.
     */
     static Values get(HWND hWnd) {
-        wstring name = ::GetProcessName(hWnd);
+        wstring name = Process::getName(hWnd);
         // Wh_Log(L"\"%s\" (%x)", name.c_str(), hWnd);
 
         if (!name.empty()) {
@@ -678,7 +671,7 @@ class Cfg {
     Cfg& operator=(const Cfg&) = delete;
     ~Cfg() = delete;
 
-private:
+  private:
     /**
     * @brief Returns trimmed process name in lower case.
     */
@@ -872,7 +865,6 @@ private:
     }
 
     // inline = declaration also a definition
-    // https://stackoverflow.com/a/46874207
     inline static std::mutex s_mutex;
     inline static Values s_global{};
     inline static unordered_map<wstring, Values> s_processes{};
@@ -882,6 +874,27 @@ private:
 };
 
 // == Main ==
+
+inline HWND GetRoot(HWND hWnd) {
+    return GetAncestor(hWnd, GA_ROOT);
+}
+
+/**
+ * @brief Checks if element is child, small, border or not main window.
+ */
+static bool ShouldSkip(HWND hWnd) {
+    LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
+    if ((style & WS_CHILD)
+    || !(style & WS_CAPTION)
+    || !(style & WS_THICKFRAME))
+        return true;
+
+    LONG_PTR exStyle = GetWindowLongPtrW(hWnd, GWL_EXSTYLE);
+    if (exStyle & WS_EX_LAYERED)
+        return true;
+
+    return false;
+}
 
 /**
  * @brief Covers the white background with a colored rectangle
@@ -944,7 +957,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         // window elements will become visible.
         if (Win::painted(hWnd, GetRoot(hWnd)))
             break;
-            
+
         auto cfg = Cfg::get(hWnd);
         if (ShouldSkip(hWnd))   // prevent any visual issues
             break;
@@ -989,7 +1002,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
     case WM_ENABLE:
     case WM_SETFOCUS:
     case WM_KILLFOCUS: {
-        // Window is ready for painting 
+        // Window is ready for painting
         // after switch back to the window
         HWND root = GetRoot(hWnd);
         if (Win::created(hWnd, root)) {
@@ -1042,7 +1055,7 @@ BOOL Wh_ModInit() {
         Wh_Log(L"Settings loaded");
     } else {
         Wh_Log(L"Failed load settings!");
-        return FALSE;    
+        return FALSE;
     }
 
     using WindhawkUtils::SetFunctionHook;
@@ -1065,7 +1078,7 @@ BOOL Wh_ModSettingsChanged(BOOL*) {
         return TRUE;
     } else {
         Wh_Log(L"Failed to reload settings - unloading...");
-        return FALSE;    
+        return FALSE;
     }
 }
 
@@ -1074,8 +1087,5 @@ void Wh_ModUninit() {
 
     Cfg::unload();
     Win::clear();
-    {
-        Lock lock(g_cacheMutex);
-        g_cachedWindows.clear();
-    }
+    Process::clear();
 }
