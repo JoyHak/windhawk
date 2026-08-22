@@ -664,19 +664,26 @@ class Cfg {
     * @brief Frees brushes and clears maps.
     */
     static void unload() {
-        Lock lock(s_mutex);
-
-        if (s_global.brush) {
-            DeleteObject(s_global.brush);
+        HBRUSH globalBrush = nullptr;
+        decltype(s_processes) oldProcesses;
+        {
+            Lock lock(s_mutex);
+            
+            // Move old state out, leave empty state behind
+            globalBrush  = std::exchange(s_global.brush, nullptr);
+            oldProcesses = std::exchange(s_processes, {});
         }
-
-        for (auto &kv : s_processes) {
+        
+        // Clean up old resources
+        if (globalBrush) {
+            DeleteObject(globalBrush);
+        }
+        
+        for (auto& kv : oldProcesses) {
             if (kv.second.brush) {
                 DeleteObject(kv.second.brush);
             }
         }
-
-        s_processes.clear();
     }
 
     static Values get() { return s_global; }
@@ -690,6 +697,7 @@ class Cfg {
         // Wh_Log(L"\"%s\" (%x)", name.c_str(), hWnd);
 
         if (!name.empty()) {
+            Lock lock(s_mutex);
             auto it = s_processes.find(name);
             if (it != s_processes.end())
                 return it->second;
