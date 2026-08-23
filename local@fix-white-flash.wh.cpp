@@ -394,14 +394,15 @@ bool g_verbose = false;
 // == Helpers ==
 
 template <typename T>
-struct Deferrer {
+struct Defer {
 	T f;
-	Deferrer(T f) : f(f) { };
-	Deferrer(const Deferrer&) = delete;
-	~Deferrer() { f(); }
+	Defer(T f) : f(f) { };
+	Defer(const Defer&) = delete;
+	~Defer() { f(); }
 };
 
-#define defer Deferrer _ =
+#define CONCAT(a, b) a##b
+#define defer Defer CONCAT(_defer, __COUNTER__) =
 
 // == Data ==
 
@@ -528,13 +529,13 @@ wstring GetCurrentProcessName() {
     size_t lastSlash = path.find_last_of(L"\\/");
     if (lastSlash == wstring::npos)
         return {};
-        
+
     path.erase(0, lastSlash + 1);
 
     // Process name should be lower case
     std::transform(
-        path.begin(), path.end(), 
-        path.begin(),   
+        path.begin(), path.end(),
+        path.begin(),
         std::towlower
     );
 
@@ -559,7 +560,7 @@ class Cfg {
         dbg::g_verbose = Wh_GetIntSetting(L"verbose");
         unload();  // safe cleanup
 
-        if (loadProcessValues() 
+        if (loadProcessValues()
          || loadGlobalValues()) {
             Log(s_values);
             return true;
@@ -605,9 +606,9 @@ class Cfg {
 
         // Process name should be in lower case
         std::transform(
-            name.begin(), name.end(), 
-            name.begin(), 
-            std::towlower  
+            name.begin(), name.end(),
+            name.begin(),
+            std::towlower
         );
         return name;
     }
