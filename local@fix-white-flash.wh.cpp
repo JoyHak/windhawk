@@ -13,10 +13,11 @@
 // @exclude winlogon.exe
 // @exclude services.exe
 // @exclude svchost.exe
+// @exclude conhost.exe
+// @exclude TextInputHost.exe
 // @exclude lsass.exe
 // @exclude smss.exe
 // @exclude wininit.exe
-// @exclude conhost.exe
 // @exclude fontdrvhost.exe
 // @exclude audiodg.exe
 // @exclude wmic.exe
@@ -31,8 +32,8 @@
 // @exclude VSCodium.exe
 // @exclude clang++.exe
 // @exclude clang-20.exe
+// @exclude DbgViewMini.exe
 // @exclude ld.lld.exe
-// @exclude TextInputHost.exe
 // @compilerOptions -lGdi32
 // ==/WindhawkMod==
 
@@ -49,7 +50,7 @@
 ### After
 ![After](https://raw.githubusercontent.com/JoyHak/windhawk/main/images/after.gif)
 
-Even a custom dark theme can't fix the long-standing issue with white areas in Win32 applications. 
+Even a custom dark theme can't fix the long-standing issue with white areas in Win32 applications.
 This mod automatically detects and paints all white regions before you can even see them.
 
 ### Features
@@ -59,8 +60,8 @@ This mod automatically detects and paints all white regions before you can even 
 - Customize the color and modes for each process individually
 
 ### Colors
-On the "Settings" tab, you can specify a color for each process. 
-For other processes not listed here, the global settings apply. 
+On the "Settings" tab, you can specify a color for each process.
+For other processes not listed here, the global settings apply.
 The color can be in one of the following formats:
 - `RGB(r, g, b)` or `rgb(r, g, b)` (e.g. `RGB(25, 25, 25)` or `rgb(17,0,0)`)
 - `#RRGGBB` or `0xRRGGBB` (e.g. `#191919` - default).
@@ -404,95 +405,6 @@ struct Deferrer {
 
 // == Data ==
 
-class Process {
-  public:
-    /**
-     * @brief Queries name of the process by window handle
-     * and stores it in the cache to avoid multiple syscalls.
-     */
-    static wstring getName(HWND hWnd) {
-        if (!hWnd) {
-            return {};
-        }
-
-        DWORD ownerPid = 0;
-        const DWORD ownerTid = GetWindowThreadProcessId(hWnd, &ownerPid);
-        {
-            Lock lock(s_mutex);
-            auto it = s_windows.find(hWnd);
-
-            if (it != s_windows.end()
-            && it->second.processId == ownerPid
-            && it->second.threadId  == ownerTid) {
-                return it->second.name;
-            }
-
-            if (it != s_windows.end())
-                s_windows.erase(it);
-        }
-
-        if (!ownerPid) {
-            return {};
-        }
-
-        HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ownerPid);
-        if (!hProc) {
-            return {};
-        }
-
-        wstring procName{};
-        WCHAR exePath[MAX_PATH] = {0};
-        DWORD exePathLen = MAX_PATH;
-
-        if (QueryFullProcessImageNameW(hProc, 0, exePath, &exePathLen)) {
-            WCHAR* name = wcsrchr(exePath, L'\\');
-            if (name) {
-                procName = (name + 1);
-                std::transform(
-                    procName.begin(),
-                    procName.end(),
-                    procName.begin(),
-                    std::towlower
-                );
-            }
-        }
-
-        CloseHandle(hProc);
-
-        if (!procName.empty()) {
-            Lock lock(s_mutex);
-            s_windows[hWnd] = { ownerPid, ownerTid, procName };
-            // return pointer stored in the map to ensure stable lifetime
-            return s_windows[hWnd].name;
-        }
-
-        return {};
-    }
-
-    static void clear() {
-        Lock lock(s_mutex);
-        s_windows.clear();
-    }
-
-    Process() = delete;
-    Process(const Process&) = delete;
-    Process& operator=(const Process&) = delete;
-    ~Process() = delete;
-
-  private:
-    struct Cache {
-        DWORD processId = 0;
-        DWORD threadId  = 0;
-        wstring name;
-    };
-
-    // inline = declaration also a definition
-    // https://stackoverflow.com/a/46874207
-    inline static std::mutex s_mutex;
-    inline static unordered_map<HWND, Cache> s_windows;
-
-};
-
 /**
  * @brief Holds marks that window and its root ancestor
  * are rendered (skip painting).
@@ -600,9 +512,35 @@ class Win {
 };
 
 /**
- * @brief RAII wrapper for settings and brushes.
- * Stores user settings in the single instance (fully static).
+ * @brief Returns trimmed name of the current process in lower case.
  */
+wstring GetCurrentProcessName() {
+    WCHAR pathBuffer[1024] {0};  // path can be longer than 260
+    DWORD pathLength =
+        GetModuleFileNameW(NULL, pathBuffer, ARRAYSIZE(pathBuffer));
+
+    if (!pathLength)
+        return {};
+
+    wstring path{ pathBuffer, pathLength };
+
+    // Find the file name part
+    size_t lastSlash = path.find_last_of(L"\\/");
+    if (lastSlash == wstring::npos)
+        return {};
+        
+    path.erase(0, lastSlash + 1);
+
+    // Process name should be lower case
+    std::transform(
+        path.begin(), path.end(), 
+        path.begin(),   
+        std::towlower
+    );
+
+    return path;
+}
+
 class Cfg {
   public:
     /**
@@ -619,92 +557,27 @@ class Cfg {
     */
     static bool load() {
         dbg::g_verbose = Wh_GetIntSetting(L"verbose");
-
         unload();  // safe cleanup
-        Lock lock(s_mutex);
 
-        s_global.aggressivePaint = Wh_GetIntSetting(L"Global.aggressivePaint");
-        s_global.longerPaint     = Wh_GetIntSetting(L"Global.longerPaint");
-        {
-            UINT   backColor = parseColor(L"Global.backgroundColor");
-            HBRUSH brush     = tryCreateBrush(backColor);
-
-            if (!brush)
-                return false;
-
-            s_global.brush = brush;
+        if (loadProcessValues() 
+         || loadGlobalValues()) {
+            Log(s_values);
+            return true;
         }
 
-        for (int i = 0;; ++i) {
-            auto name = Cfg::getProcessName(L"Process[%d].name", i);
-            if (name.empty())
-                break;
-            if (name == kInvalidProcessName)
-                continue;
-
-            s_processes[name].aggressivePaint =
-                Wh_GetIntSetting(L"Process[%d].aggressivePaint", i);
-            s_processes[name].longerPaint =
-                Wh_GetIntSetting(L"Process[%d].longerPaint", i);
-
-            UINT   backColor = parseColor(L"Process[%d].backgroundColor", i);
-            HBRUSH brush     = tryCreateBrush(backColor);
-
-            if (brush)
-                s_processes[name].brush = brush;
-        }
-
-        Log(s_global);
-        Log(s_processes);
-
-        return true;
+        return false;
     }
 
     /**
     * @brief Frees brushes and clears maps.
     */
     static void unload() {
-        HBRUSH globalBrush = nullptr;
-        decltype(s_processes) oldProcesses;
-        {
-            Lock lock(s_mutex);
-            
-            // Move old state out, leave empty state behind
-            globalBrush  = std::exchange(s_global.brush, nullptr);
-            oldProcesses = std::exchange(s_processes, {});
-        }
-        
-        // Clean up old resources
-        if (globalBrush) {
-            DeleteObject(globalBrush);
-        }
-        
-        for (auto& kv : oldProcesses) {
-            if (kv.second.brush) {
-                DeleteObject(kv.second.brush);
-            }
+        if (s_values.brush) {
+            DeleteObject(s_values.brush);
         }
     }
 
-    static Values get() { return s_global; }
-
-    /**
-    * @brief Returns values for specific process
-    * or default (global) values.
-    */
-    static Values get(HWND hWnd) {
-        wstring name = Process::getName(hWnd);
-        // Wh_Log(L"\"%s\" (%x)", name.c_str(), hWnd);
-
-        if (!name.empty()) {
-            Lock lock(s_mutex);
-            auto it = s_processes.find(name);
-            if (it != s_processes.end())
-                return it->second;
-        }
-
-        return s_global;
-    }
+    inline static Values get() { return s_values; }
 
     Cfg() = delete;
     Cfg(const Cfg&) = delete;
@@ -718,20 +591,24 @@ class Cfg {
     template <typename... Args>
     static wstring getProcessName(PCWSTR valueName, Args... args) {
         PCWSTR value = Wh_GetStringSetting(valueName, args...);
+        defer [&] { Wh_FreeStringSetting(value); };
+
         if (*value == L'\0')
             return {};
-
-        defer [&] { Wh_FreeStringSetting(value); };  // empty value cannot be freed
 
         wstring name{ value };
         name.erase(0, name.find_first_not_of(L" \t\v\n"));  // left trim
         name.erase(name.find_last_not_of(L" \t\v\n") + 1);  // right trim
 
         if (name.empty())
-            return kInvalidProcessName;
+            return {};
 
         // Process name should be in lower case
-        std::transform(name.begin(), name.end(), name.begin(), std::towlower);
+        std::transform(
+            name.begin(), name.end(), 
+            name.begin(), 
+            std::towlower  
+        );
         return name;
     }
 
@@ -755,9 +632,9 @@ class Cfg {
     }
 
     /**
-    * @brief Parses color from user: #RRGGBB, 0xRRGGBB, RGB(r,g,b)
-    * @returns Integer that represents RGB (not COLORREF!).
-    */
+     * @brief Parses color from user: #RRGGBB, 0xRRGGBB, RGB(r,g,b)
+     * @returns Integer that represents RGB (not COLORREF!).
+     */
     template <typename... Args>
     static UINT parseColor(PCWSTR valueName, Args... args) {
         UINT color = kInvalidColor;
@@ -889,28 +766,80 @@ class Cfg {
     }
 
     /**
-    * @brief Creates solid brush with fall back to `kDefaultColor`
-    */
-    static HBRUSH tryCreateBrush(UINT rgb) {
+     * @brief Creates solid brush and returns true on success.
+     */
+    static bool tryCreateBrush(UINT rgb, PCWSTR valueType = L"process") {
         HBRUSH brush = CreateSolidBrush(toColor(rgb));
-        if (!brush) {
-            Wh_Log(L"Failed to create 0x%06x brush!", rgb);
-            brush = CreateSolidBrush(toColor(kDefaultColor));
+        if (brush) {
+            s_values.brush = brush;
+            return true;
         }
-        if (!brush) {
-            Wh_Log(L"Failed to create default brush!");
-            return NULL;
+
+        Wh_Log(
+            L"Failed to create %s brush 0x%06x!",
+            valueType, rgb
+        );
+        return false;
+    }
+
+    static bool loadGlobalValues() {
+        s_values.aggressivePaint =
+            Wh_GetIntSetting(L"Global.aggressivePaint");
+        s_values.longerPaint =
+            Wh_GetIntSetting(L"Global.longerPaint");
+
+        UINT backColor = parseColor(L"Global.backgroundColor");
+        if (tryCreateBrush(backColor, L"global"))
+            return true;
+
+        if (tryCreateBrush(kDefaultColor, L"default"))
+            return true;
+
+        return false;
+    }
+
+    static bool loadProcessValues() {
+        wstring currentName = ::GetCurrentProcessName();
+        if (currentName.empty()) {
+            Wh_Log(L"Failed to retrieve current process name!");
+            return false;
         }
-        return brush;
+
+        for (int i = 0;; ++i) {
+            wstring name = Cfg::getProcessName(L"Process[%d].name", i);
+            if (name.empty())
+                break;
+            if (name != currentName)
+                continue;
+
+            s_values.aggressivePaint =
+                Wh_GetIntSetting(L"Process[%d].aggressivePaint", i);
+            s_values.longerPaint =
+                Wh_GetIntSetting(L"Process[%d].longerPaint", i);
+
+            UINT backColor = parseColor(L"Process[%d].backgroundColor", i);
+            if (tryCreateBrush(backColor, L"process"))
+                return true;
+
+            backColor = parseColor(L"Global.backgroundColor");
+            if (tryCreateBrush(backColor, L"global")) {
+                return true;
+            }
+
+            if (tryCreateBrush(kDefaultColor, L"default"))
+                return true;
+
+            return false;
+        }
+
+        Wh_Log(L"\"%s\" not found in the settings. Use global values", currentName.c_str());
+        return false;
     }
 
     // inline = declaration also a definition
-    inline static std::mutex s_mutex;
-    inline static Values s_global{};
-    inline static unordered_map<wstring, Values> s_processes{};
+    inline static Values s_values{};
     static constexpr UINT kDefaultColor = 0x191919;
     static constexpr UINT kInvalidColor = UINT_MAX;
-    static constexpr PCWSTR kInvalidProcessName{ L"<ipn>" };
 };
 
 // == Main ==
@@ -954,7 +883,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         if (Win::painted(hWnd, GetRoot(hWnd)))
             break;
 
-        auto cfg = Cfg::get(hWnd);
+        auto cfg = Cfg::get();
         if (!cfg.longerPaint && ShouldSkip(hWnd))
             break;
 
@@ -998,7 +927,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         if (Win::painted(hWnd, GetRoot(hWnd)))
             break;
 
-        auto cfg = Cfg::get(hWnd);
+        auto cfg = Cfg::get();
         if (ShouldSkip(hWnd))   // prevent any visual issues
             break;
 
@@ -1017,7 +946,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
     case WM_PAINT: {
         // This message appears very frequently.
         // Set "painted" state temporary to reduce painting
-        auto cfg = Cfg::get(hWnd);
+        auto cfg = Cfg::get();
         if (cfg.aggressivePaint)
             break;
 
@@ -1127,5 +1056,4 @@ void Wh_ModUninit() {
 
     Cfg::unload();
     Win::clear();
-    Process::clear();
 }
