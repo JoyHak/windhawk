@@ -8,21 +8,10 @@
 // @homepage        https://github.com/JoyHak/windhawk
 // @license         MIT
 // @include *
-// @exclude csrss.exe
-// @exclude dwm.exe
-// @exclude winlogon.exe
-// @exclude services.exe
-// @exclude svchost.exe
 // @exclude conhost.exe
 // @exclude TextInputHost.exe
-// @exclude lsass.exe
-// @exclude smss.exe
-// @exclude wininit.exe
-// @exclude fontdrvhost.exe
 // @exclude audiodg.exe
 // @exclude wmic.exe
-// @exclude wmiapsrv.exe
-// @exclude wmiprvse.exe
 // @exclude alg.exe
 // @exclude nvcplui.exe
 // @exclude nvcontainer.exe
@@ -53,12 +42,6 @@
 Even a custom dark theme can't fix the long-standing issue with white areas in Win32 applications.
 This mod automatically detects and paints all white regions before you can even see them.
 
-### Features
-- Choose a color to paint over in white areas (`#191919` - dark gray by default)
-- Enable aggressive painting for all applications
-- Increase the duration during which the paint remains visible
-- Customize the color and modes for each process individually
-
 ### Colors
 On the "Settings" tab, you can specify a color for each process.
 For other processes not listed here, the global settings apply.
@@ -75,7 +58,6 @@ Works on Windows 10 and 11 (starting from 21h1).
 
 Also you can install the [UxTheme mod](https://windhawk.net/mods/uxtheme-hook) and set up the [CakeOS theme](https://www.deviantart.com/niivu/art/cakeOS-2-0-for-Windows-11-953541433)
 by niivu to get best dark theme experience (works on Windows 10 too).
-
 */
 // ==/WindhawkModReadme==
 
@@ -85,20 +67,6 @@ by niivu to get best dark theme experience (works on Windows 10 too).
     - backgroundColor: "0x191919"
       $name: Background Color
       $description: Enter hex (#RRGGBB or 0xRRGGBB) or RGB(r,g,b)
-
-    - aggressivePaint: true
-      $name: Aggressive Painting
-      $description: >-
-        Aggressively search for white regions and paint them in with the chosen color.
-        May affect the appearance and rendering of windows!
-        Fixes white flickering while changing the window size.
-
-    - longerPaint: true
-      $name: Longer Painting
-      $description: >-
-        Paint the white regions for a longer period.
-        Window elements will appear more slowly.
-        Guaranteed to paint all windows and child elements.
 
   $name: Global Settings
   $description: These settings affect all processes and their windows.
@@ -112,30 +80,10 @@ by niivu to get best dark theme experience (works on Windows 10 too).
       $name: Background Color
       $description: Enter hex (#RRGGBB or 0xRRGGBB) or RGB(r,g,b)
 
-    - aggressivePaint: true
-      $name: Aggressive Painting
-      $description: >-
-        Aggressively search for white regions and fill them in with the chosen color.
-        May affect the appearance and rendering of windows!
-        Fixes white flickering while changing the window size.
-
-    - longerPaint: true
-      $name: Longer Painting
-      $description: >-
-        Paint the white regions for a longer period.
-        Window elements will appear more slowly.
-        Guaranteed to paint all windows and child elements.
-
   $name: Settings per Process
   $description: >-
     You can set individual parameters for each process.
     Click "Add new item" below to add a new process.
-
-- verbose: false
-  $name: Verbose Logging
-  $description: >-
-    Output additional messages to the "output" tab and
-    `user-data\logs\......\*-Windhawk Log.log`
 */
 // ==/WindhawkModSettings==
 
@@ -144,252 +92,13 @@ by niivu to get best dark theme experience (works on Windows 10 too).
 #include <mutex>
 #include <string>
 #include <unordered_map>
-#include <concepts>     // for logging overloads
 
 #define DCX_USESTYLE  0x00010000L
 
 using std::wstring;
 using std::unordered_map;
 using Lock = std::lock_guard<std::mutex>;
-using DefProcCallback = WNDPROC;
-
-// == Verbose Logging ==
-
-#pragma clang diagnostic ignored "-Wformat-security"
-/**
- * @brief Formats a narrow (char) printf-style string and append its converted UTF-16
- * representation to a wide output string using `MultiByteToWideChar`
- * with the specified @p codePage.
- *
- * @remark It is used to convert narrow ANSI string from
- * `__builtin_dump_struct` intrinsic (see `Dump` below) to wide UTF-16 string
- * because `Wh_Log` expects wide string.
- * https://clang.llvm.org/docs/LanguageExtensions.html#builtin-dump-struct
- * @see Dump
- *
- * @param[out] out
- *     `std::wstring` to which the converted wide text will be appended.
- *
- * @param[in] codePage
- *     Win32 code page identifier passed to `MultiByteToWideChar` (CP_UTF8, CP_ACP, ...)
- *     The chosen code page determines how the narrow bytes are interpreted
- *     when converting to UTF-16.
- *
- * @param[in] format
- *     printf-style format string. Must be non-null.
- *
- * @param[in] args
- *     Arguments corresponding to @p format. They are forwarded to `std::snprintf`.
- *
- * @warning Performs no modifications to @p out if any step fails (null @p format,
- * formatting error, or conversion failure); performs no any locale-aware normalization
- * beyond the specified code page conversion.
- */
-template<typename... Args>
-void ToWide(wstring& out, const UINT codePage, const char* format, Args&& ...args) {
-    if (!format)
-        return;
-
-    // determine required size for narrow formatted string
-    int narrowLen = std::snprintf(
-        nullptr, 0,
-        format,
-        std::forward<Args>(args)...
-    );
-    if (narrowLen < 0)
-        return;
-
-    // allocate narrow buffer and format into it
-    // (include space for terminating NUL)
-    std::string narrow{};
-    narrow.resize(static_cast<size_t>(narrowLen) + 1);
-    std::snprintf(
-        narrow.data(),
-        narrow.size(),
-        format,
-        std::forward<Args>(args)...
-    );
-
-    // convert narrow to wide
-    int wideLen = MultiByteToWideChar(
-        codePage, 0,
-        narrow.c_str(),
-        -1, nullptr, 0
-    );
-    if (wideLen <= 0)
-        return;
-
-    // wideLen includes terminating NUL;
-    // resize to exclude the trailing null when appending
-    wstring wide{};
-    wide.resize(static_cast<size_t>(wideLen) - 1);
-
-    MultiByteToWideChar(
-        codePage, 0,
-        narrow.c_str(),
-        -1, wide.data(),
-        wideLen
-    );
-
-    out += wide;
-}
-
-namespace dbg {
-/**
-* @brief Dumps @p obj contents into the string.
-* Supports primitives, strings and objects.
-* Dumps public and private fields, their type, name and value.
-*
-* @param[out] out
-*     Target string to which the @p obj contents will be appended.
-* @param[in] obj
-*     Any object, struct, string or primitive.
-*/
-template<typename T>
-void Dump(wstring& out, const T& obj) {
-    if constexpr (std::is_same_v<std::remove_cv_t<T>, wstring>) {
-        out += L"\"" + obj + L"\"";
-        return;
-    }
-
-    constexpr UINT codePage = CP_ACP;  // ANSI string
-    if constexpr (std::is_same_v<std::remove_cv_t<T>, std::string>) {
-        ToWide(out, codePage, "\"%s\"", obj.data());
-        return;
-    }
-
-    wstring tmp{};
-    size_t start{}, end{};
-
-    if constexpr (std::is_class_v<T> || std::is_union_v<T>) {
-        __builtin_dump_struct(&obj, &ToWide, tmp, codePage);
-
-        // Trim class/struct type
-        start = tmp.find(L'{');
-        end   = tmp.rfind(L'}');
-
-        if (start != wstring::npos) {
-            start += 3;
-            out += L'{';
-        }
-        if (end != wstring::npos) {
-            end += 1;
-        }
-    } else {
-        struct { T value; } v { obj };
-        __builtin_dump_struct(&v, &ToWide, tmp, codePage);
-
-        // Trim struct wrapper
-        start = tmp.find(L'=');
-        end   = tmp.rfind(L'}');
-
-        if (start != wstring::npos)
-            start += 8;
-        if (end != wstring::npos)
-            end -= 1;
-    }
-
-    if (start == wstring::npos && end == wstring::npos) {
-        out += tmp;
-        return;
-    }
-
-    if (start == wstring::npos)
-        start = 0;
-
-    if (end == wstring::npos)
-        out += tmp.substr(start);
-    else
-        out += tmp.substr(start, end - start);
-}
-
-template<typename T>
-concept pair = requires (T t) {
-    typename T::first_type;
-    typename T::second_type;
-    { t.first }  -> std::same_as<typename T::first_type&>;
-    { t.second } -> std::same_as<typename T::second_type&>;
-};
-
-template<typename Cont>
-concept container = requires (Cont t) {
-    { std::begin(t) } -> std::input_or_output_iterator;
-    { std::end(t)   } -> std::input_or_output_iterator;
-    t.size();
-    t.empty();
-};
-
-template<typename Cont>
-concept container_pairs = container<Cont> && pair<typename Cont::value_type>;
-
-template<typename Cont>
-concept container_linear = container<Cont>;
-// concept container_linear = container<Cont> && (!pair<typename Cont::value_type>);
-
-// Helpers to create readable dump string
-
-template<container_pairs Cont>
-void Fmt(wstring& out, Cont& cont) {
-    if (cont.empty()) {
-        out += L"{};";
-        return;
-    }
-
-    out.reserve(out.size() + cont.size() * 256); // heuristic reserve to reduce reallocations
-    out += L"{ ";
-
-    for (const auto& kv : cont) {
-        Dump(out, kv.first);
-        out += L" -> ";
-        Dump(out, kv.second);
-        out += L"; ";
-    }
-
-    out.erase(out.length() - 2);
-    out += L" };";
-}
-
-template<container_linear Cont>
-void Fmt(wstring& out, Cont& cont) {
-    if (cont.empty()) {
-        out += L"[];";
-        return;
-    }
-
-    out.reserve(out.size() + cont.size() * 256); // heuristic reserve to reduce reallocations
-    out += L"[ ";
-
-    for (const auto& val : cont) {
-        Dump(out, val);
-        out += L", ";
-    }
-    out.erase(out.length() - 2);
-    out += L" ];";
-}
-
-template<typename T>
-void Fmt(wstring& out, const T& obj) {
-    Dump(out, obj);
-    out += L";";
-}
-
-bool g_verbose = false;
-
-} // dbg
-
-#define WIDE(x) L##x
-
-/**
-* @brief Outputs variable name and it's value.
-*/
-#define Log(obj)                                          \
-    do {                                                  \
-        if (dbg::g_verbose) {                             \
-            std::wstring _out(WIDE(#obj) L" = ");         \
-            dbg::Fmt(_out, (obj));                        \
-            Wh_Log(L"%s", _out.c_str());                  \
-        }                                                 \
-    } while (0)
+using DefProcCallback = WNDPROC;  // for clarity
 
 // == Helpers ==
 
@@ -450,10 +159,13 @@ class Win {
      * @brief Erases all states and redraws stored windows
      */
     static void clear() {
-        Lock lock(s_mutex);
+        decltype(s_windows) windows;
+        {
+            Lock lock(s_mutex);
+            windows.swap(s_windows);
+        }
 
-        Log(s_windows);
-        for (auto& win : s_windows) {
+        for (auto& win : windows) {
             if (IsWindow(win.first)) {
                 RedrawWindow(
                     win.first, NULL, NULL,
@@ -461,7 +173,6 @@ class Win {
                 );
             }
         }
-        s_windows.clear();
     }
 
     Win() = delete;
@@ -544,41 +255,24 @@ wstring GetCurrentProcessName() {
 
 class Cfg {
   public:
-    /**
-    * @brief Available user settings.
-    */
-    struct Values {
-        HBRUSH brush;
-        bool aggressivePaint;
-        bool longerPaint;
-    };
-
-    /**
-    * @brief Loads all settings. Returns true on success.
-    */
     static bool load() {
-        dbg::g_verbose = Wh_GetIntSetting(L"verbose");
         unload();  // safe cleanup
 
         if (loadProcessValues()
          || loadGlobalValues()) {
-            Log(s_values);
             return true;
         }
 
         return false;
     }
 
-    /**
-    * @brief Frees brushes and clears maps.
-    */
     static void unload() {
-        if (s_values.brush) {
-            DeleteObject(s_values.brush);
+        if (s_brush) {
+            DeleteObject(s_brush);
         }
     }
 
-    inline static Values get() { return s_values; }
+    inline static HBRUSH get() { return s_brush; }
 
     Cfg() = delete;
     Cfg(const Cfg&) = delete;
@@ -772,7 +466,7 @@ class Cfg {
     static bool tryCreateBrush(UINT rgb, PCWSTR valueType = L"process") {
         HBRUSH brush = CreateSolidBrush(toColor(rgb));
         if (brush) {
-            s_values.brush = brush;
+            s_brush = brush;
             return true;
         }
 
@@ -784,11 +478,6 @@ class Cfg {
     }
 
     static bool loadGlobalValues() {
-        s_values.aggressivePaint =
-            Wh_GetIntSetting(L"Global.aggressivePaint");
-        s_values.longerPaint =
-            Wh_GetIntSetting(L"Global.longerPaint");
-
         UINT backColor = parseColor(L"Global.backgroundColor");
         if (tryCreateBrush(backColor, L"global"))
             return true;
@@ -813,24 +502,8 @@ class Cfg {
             if (name != currentName)
                 continue;
 
-            s_values.aggressivePaint =
-                Wh_GetIntSetting(L"Process[%d].aggressivePaint", i);
-            s_values.longerPaint =
-                Wh_GetIntSetting(L"Process[%d].longerPaint", i);
-
             UINT backColor = parseColor(L"Process[%d].backgroundColor", i);
-            if (tryCreateBrush(backColor, L"process"))
-                return true;
-
-            backColor = parseColor(L"Global.backgroundColor");
-            if (tryCreateBrush(backColor, L"global")) {
-                return true;
-            }
-
-            if (tryCreateBrush(kDefaultColor, L"default"))
-                return true;
-
-            return false;
+            return tryCreateBrush(backColor, L"process");
         }
 
         Wh_Log(L"\"%s\" not found in the settings. Use global values", currentName.c_str());
@@ -838,7 +511,7 @@ class Cfg {
     }
 
     // inline = declaration also a definition
-    inline static Values s_values{};
+    inline static HBRUSH s_brush = NULL;
     static constexpr UINT kDefaultColor = 0x191919;
     static constexpr UINT kInvalidColor = UINT_MAX;
 };
@@ -884,10 +557,6 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         if (Win::painted(hWnd, GetRoot(hWnd)))
             break;
 
-        auto cfg = Cfg::get();
-        if (!cfg.longerPaint && ShouldSkip(hWnd))
-            break;
-
         HRGN hrgn = (HRGN)wParam;
         HDC  hdc{};
 
@@ -913,7 +582,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
             rect.bottom - rect.top
         };
 
-        FillRect(hdc, &rect, cfg.brush);
+        FillRect(hdc, &rect, Cfg::get());
         ReleaseDC(hWnd, hdc);
         Win::setPainted(hWnd);  // prevent any flicks
 
@@ -927,9 +596,7 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
         // window elements will become visible.
         if (Win::painted(hWnd, GetRoot(hWnd)))
             break;
-
-        auto cfg = Cfg::get();
-        if (ShouldSkip(hWnd))   // prevent any visual issues
+        if (ShouldSkip(hWnd))  // prevent any visual issues
             break;
 
         RECT rect{};
@@ -937,33 +604,11 @@ LRESULT FillWindow(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam, DefProcCal
             break;
 
         HDC hdc = (HDC)wParam;
-        if (!hdc) {
+        if (!hdc)
             break;
-        }
 
-        FillRect(hdc, &rect, cfg.brush);
+        FillRect(hdc, &rect, Cfg::get());
         return TRUE;  // don't let the original erase it again
-    }
-    case WM_PAINT: {
-        // This message appears very frequently.
-        // Set "painted" state temporary to reduce painting
-        auto cfg = Cfg::get();
-        if (cfg.aggressivePaint)
-            break;
-
-        PAINTSTRUCT paint{};
-        HDC hdc = BeginPaint(hWnd, &paint);
-        if (!hdc) {
-            break;
-        }
-
-        Win::setPainted(hWnd);
-        LRESULT result = original(hWnd, Msg, wParam, lParam);
-
-        Win::unsetPainted(hWnd);
-        EndPaint(hWnd, &paint);
-
-        return result;
     }
     case WM_THEMECHANGED:
     case WM_SYSCOLORCHANGE:
